@@ -3,12 +3,17 @@
 **چرا این مرحله باید روی کامپیوتر rahim اجرا شود؟** مسیرهای `D:\ic-agents`، پورت‌های `127.0.0.1` و `claude mcp list` فقط روی همان ماشین وجود دارند. نشست ابری Claude Code به آن دسترسی ندارد (rahim پوشه‌ها را به نشست‌های ابری نمی‌دهد؛ معمولاً باید برنامه‌ی Claude روی ویندوز به‌روز شود).
 
 ## اجرا (فقط‌خواندنی، بدون نیاز به نصب چیزی جز Node ≥ 18)
+فایل فعلاً فقط روی شاخه‌ی PR است (هنوز merge نشده)، پس همان شاخه را بگیرید:
 ```powershell
-git clone <repo-url>; cd claude-website
+cd D:\
+git clone -b ccr-84251afb-x7i9xi https://github.com/irancampingstore-hash/claude-website
+cd claude-website
 node tools\discover-agents.mjs --roots "D:\ic-agents;D:\IranCamping-Intelligence-Core;D:\xampp\htdocs\ic-agents;D:\xampp\htdocs\claude" --out .\registry
 ```
 خروجی در `registry\`:
 `AGENT_API_REGISTRY.json` · `AGENT_API_REGISTRY.md` · `AGENT_INTEGRATION_MATRIX.md` · `AGENT_CONNECTION_TEST_REPORT.md` · `discovery-details.json`
+
+> خطاهای رایج: نام فایل `discover-agent**s**.mjs` است (با s)؛ دستور باید داخل پوشه‌ی `claude-website` اجرا شود؛ گزینه `--roots` است و مسیرها با `D:\` (با دونقطه) و جداکننده‌ی `;`.
 
 ## چه کاری می‌کند / نمی‌کند
 - فقط درخواست **GET** به آدرس‌های محلی شناخته‌شده (Ollama 11434، LM Studio 1234، FCC 8082، Mobile Command 17843، Fleet 7422) و یک handshake ‏`initialize` برای MCP عمومی ForgeOps. هیچ ابزاری اجرا نمی‌شود.

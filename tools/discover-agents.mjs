@@ -23,9 +23,10 @@ function arg(name, dflt) {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : dflt;
 }
-const roots = (arg("roots", "") || "").split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+const roots = (arg("roots", arg("root", "")) || "").split(/[;,]/).map((s) => s.trim()).filter(Boolean);
 const outDir = resolve(arg("out", "./registry"));
 const seedFile = arg("seed", join(here, "known-services.json"));
+if (!roots.length) console.warn("Note: no --roots given, so no folders will be scanned (only the known local endpoints are probed).");
 const noProbe = process.argv.includes("--no-probe");
 const skipNetstat = process.argv.includes("--no-netstat");
 const probeBase = arg("probe-base"); // test hook: rewrite http://127.0.0.1:PORT → this base
