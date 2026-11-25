@@ -47,6 +47,14 @@ export function urlAllowed(url: string, allow: string[]): boolean {
   });
 }
 
+function pickPath(obj: unknown, path: string): unknown {
+  return path.split(".").reduce<any>((cur, key) => {
+    if (cur === undefined || cur === null) return undefined;
+    const m = key.match(/^([^[\]]+)\[(\d+)\]$/);
+    return m ? cur[m[1]!]?.[Number(m[2])] : cur[key];
+  }, obj);
+}
+
 export function createHandlers(cfg: AgentConfig): Record<string, Handler> {
   async function guardPath(raw: unknown, write = false, mustExist = true): Promise<string> {
     if (typeof raw !== "string" || !isAbsolute(raw)) throw new Error("Use an absolute path.");
@@ -162,13 +170,29 @@ export function createHandlers(cfg: AgentConfig): Record<string, Handler> {
       return { written: p, bytes: Buffer.byteLength(content), backup };
     },
 
-    "http.get": async ({ url }) => {
+    "http.get": async ({ url, pick }) => {
       if (typeof url !== "string") throw new Error("url must be a string");
       if (!cfg.httpAllow.length) throw new Error("No local URLs are enabled on this PC (PC_HTTP_ALLOW / httpAllow).");
       if (!urlAllowed(url, cfg.httpAllow)) throw new Error(`That URL is not in this PC's allow-list. Allowed: ${cfg.httpAllow.join(", ")}`);
-      const res = await fetch(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(15_000), headers: { accept: "application/json, text/plain;q=0.9, */*;q=0.1" } });
+      const res = await fetch(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(30_000), headers: { accept: "application/json, text/plain;q=0.9, */*;q=0.1" } });
       if (res.status >= 300 && res.status < 400) throw new Error(`Redirects are not followed (HTTP ${res.status}).`);
       const buf = Buffer.from(await res.arrayBuffer());
+      if (Array.isArray(pick) && pick.length) {
+        // Return only the requested JSON fields (dotted paths, e.g. "totals" or "queues.Orchestrator.counts") — keeps big dashboards small.
+        let json: unknown;
+        try {
+          json = JSON.parse(buf.toString("utf8"));
+        } catch {
+          throw new Error("pick was given but the response is not JSON.");
+        }
+        const picked: Record<string, unknown> = {};
+        for (const p of pick.slice(0, 20).map(String)) {
+          const v = pickPath(json, p);
+          const text = JSON.stringify(v) ?? "null";
+          picked[p] = text.length > 50_000 ? `[too large: ${text.length} chars — pick a narrower path]` : v;
+        }
+        return { status: res.status, content_type: res.headers.get("content-type"), truncated: false, body: JSON.stringify(picked), full_size_bytes: buf.length };
+      }
       return { status: res.status, content_type: res.headers.get("content-type"), truncated: buf.length > MAX_READ, body: buf.subarray(0, MAX_READ).toString("utf8") };
     },
 

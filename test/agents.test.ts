@@ -44,6 +44,8 @@ describe("PC read-only HTTP relay", () => {
 
   const srv = createServer((req, res) => {
     if (req.url === "/fleet") return void res.setHeader("content-type", "application/json").end(JSON.stringify({ agents: ["a"] }));
+    if (req.url === "/big") return void res.setHeader("content-type", "application/json").end(JSON.stringify({ totals: { tasks: 254 }, queues: { Orchestrator: { counts: { pending: 23 } } }, rows: Array.from({ length: 5000 }, (_, i) => ({ id: i, command: "x".repeat(60) })) }));
+    if (req.url === "/text") return void res.end("plain");
     if (req.url === "/redir") return void res.writeHead(302, { location: "http://127.0.0.1:1/x" }).end();
     res.writeHead(404).end("no");
   });
@@ -52,11 +54,18 @@ describe("PC read-only HTTP relay", () => {
   it("GETs allowed URLs, refuses redirects and anything not allow-listed", async () => {
     const port = await new Promise<number>((r) => srv.listen(0, "127.0.0.1", () => r((srv.address() as AddressInfo).port)));
     const base = `http://127.0.0.1:${port}`;
-    const cfg = { hubUrl: "", token: "", name: "m", roots: [], writeRoots: [], allowExec: false, apps: {}, aiProviders: {}, httpAllow: [`${base}/fleet`, `${base}/redir`] };
+    const cfg = { hubUrl: "", token: "", name: "m", roots: [], writeRoots: [], allowExec: false, apps: {}, aiProviders: {}, httpAllow: [`${base}/fleet`, `${base}/redir`, `${base}/big`, `${base}/text`] };
     const h = createHandlers(cfg);
     const ok = (await h["http.get"]!({ url: `${base}/fleet` })) as { status: number; body: string };
     expect(ok.status).toBe(200);
     expect(JSON.parse(ok.body)).toEqual({ agents: ["a"] });
+    const big = (await h["http.get"]!({ url: `${base}/big` })) as { truncated: boolean; body: string };
+    expect(big.truncated).toBe(true); // a full 300 KB body is cut, as before
+    const picked = (await h["http.get"]!({ url: `${base}/big`, pick: ["totals", "queues.Orchestrator.counts.pending", "rows[1].id", "missing.path"] })) as { body: string; full_size_bytes: number; truncated: boolean };
+    expect(picked.truncated).toBe(false);
+    expect(picked.full_size_bytes).toBeGreaterThan(300_000);
+    expect(JSON.parse(picked.body)).toEqual({ totals: { tasks: 254 }, "queues.Orchestrator.counts.pending": 23, "rows[1].id": 1 });
+    await expect(h["http.get"]!({ url: `${base}/text`, pick: ["a"] })).rejects.toThrow(/not JSON/);
     await expect(h["http.get"]!({ url: `${base}/secret` })).rejects.toThrow(/allow-list/);
     await expect(h["http.get"]!({ url: `${base}/redir` })).rejects.toThrow(/Redirects are not followed/);
     await expect(createHandlers({ ...cfg, httpAllow: [] })["http.get"]!({ url: `${base}/fleet` })).rejects.toThrow(/No local URLs are enabled/);

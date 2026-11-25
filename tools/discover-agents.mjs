@@ -65,7 +65,7 @@ async function probe(url, expect = [200]) {
   const target = probeBase ? url.replace(/^https?:\/\/127\.0\.0\.1:\d+/, probeBase) : url;
   const t0 = Date.now();
   try {
-    const r = await fetch(target, { method: "GET", signal: AbortSignal.timeout(5000), headers: { accept: "application/json" } });
+    const r = await fetch(target, { method: "GET", signal: AbortSignal.timeout(Number(arg("probe-timeout-ms", 20000))), headers: { accept: "application/json" } });
     const text = (await r.text()).slice(0, 4000);
     let keys;
     try {
