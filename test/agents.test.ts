@@ -54,7 +54,7 @@ describe("PC read-only HTTP relay", () => {
   it("GETs allowed URLs, refuses redirects and anything not allow-listed", async () => {
     const port = await new Promise<number>((r) => srv.listen(0, "127.0.0.1", () => r((srv.address() as AddressInfo).port)));
     const base = `http://127.0.0.1:${port}`;
-    const cfg = { hubUrl: "", token: "", name: "m", roots: [], writeRoots: [], allowExec: false, apps: {}, aiProviders: {}, httpAllow: [`${base}/fleet`, `${base}/redir`, `${base}/big`, `${base}/text`] };
+    const cfg = { hubUrl: "", token: "", name: "m", roots: [], writeRoots: [], allowExec: false, apps: {}, aiProviders: {}, httpAllow: [`${base}/fleet`, `${base}/redir`, `${base}/big`, `${base}/text`], mcpServers: {} };
     const h = createHandlers(cfg);
     const ok = (await h["http.get"]!({ url: `${base}/fleet` })) as { status: number; body: string };
     expect(ok.status).toBe(200);

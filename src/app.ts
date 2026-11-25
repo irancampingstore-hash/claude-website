@@ -103,6 +103,19 @@ export function createApp(hub: Hub): { app: express.Express; provider: HubOAuthP
     }
   });
 
+  app.get("/agents/oauth/callback", async (req, res) => {
+    const reg = hub.services.get("agents") as { oauthFinish: (code: string, state: string) => Promise<{ name: string }> } | undefined;
+    const { code, state, error_description: errDesc } = req.query as Record<string, string | undefined>;
+    if (!reg || !code || !state) return void res.status(400).send(page("اتصال ناموفق", errDesc ?? "پاسخ ناقص بود.", false));
+    try {
+      const a = await reg.oauthFinish(code, state);
+      res.send(page("✅ ورود انجام شد", `ایجنت <b>${a.name.replace(/[<>&"]/g, "")}</b> به هاب متصل شد. می‌توانید این صفحه را ببندید.`));
+    } catch (e) {
+      console.error("Agent OAuth callback failed:", e instanceof Error ? e.message : e);
+      res.status(400).send(page("اتصال ناموفق", "ورود کامل نشد. دوباره agent_oauth_start را اجرا کنید.", false));
+    }
+  });
+
   app.get("/instagram/webhook", (req, res) => {
     const expected = hub.config.instagram?.webhookVerifyToken;
     const { "hub.mode": mode, "hub.verify_token": token, "hub.challenge": challenge } = req.query as Record<string, string>;

@@ -3,6 +3,8 @@ import { copyFile, mkdir, readdir, realpath, stat, writeFile, open } from "node:
 import { arch, cpus, freemem, homedir, hostname, loadavg, platform, release, totalmem, uptime } from "node:os";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { checkAdminCommand, isSensitivePath } from "../connectors/policy.js";
 import type { AgentConfig } from "./config.js";
 
@@ -69,6 +71,22 @@ export function createHandlers(cfg: AgentConfig): Record<string, Handler> {
     return real;
   }
 
+  /** Start one allow-listed stdio MCP server for the duration of a single request. */
+  async function withMcpServer<T>(name: string, fn: (c: Client) => Promise<T>): Promise<T> {
+    const def = cfg.mcpServers[name];
+    if (!def) throw new Error(`MCP server "${name}" is not enabled on this PC. Enabled: ${Object.keys(cfg.mcpServers).join(", ") || "(none)"}`);
+    const transport = new StdioClientTransport({ command: def.command, args: def.args ?? [], env: { ...getDefaultEnvironment(), ...(def.env ?? {}) }, cwd: def.cwd, stderr: "ignore" });
+    const client = new Client({ name: "iran-camping-pc-agent", version: AGENT_VERSION });
+    const timer = setTimeout(() => void client.close().catch(() => undefined), 90_000);
+    try {
+      await client.connect(transport);
+      return await fn(client);
+    } finally {
+      clearTimeout(timer);
+      await client.close().catch(() => undefined);
+    }
+  }
+
   const aiBase = (provider?: string, model?: string) => ({ provider, model });
 
   /** Call whichever provider has the model; Ollama native API for ollama, OpenAI-compatible for others. */
@@ -123,6 +141,7 @@ export function createHandlers(cfg: AgentConfig): Record<string, Handler> {
         writable_folders: cfg.writeRoots,
         exec_enabled: cfg.allowExec,
         http_allow: cfg.httpAllow,
+        mcp_servers: Object.keys(cfg.mcpServers),
         apps: Object.keys(cfg.apps),
         ai_providers: ai,
       };
@@ -195,6 +214,19 @@ export function createHandlers(cfg: AgentConfig): Record<string, Handler> {
       }
       return { status: res.status, content_type: res.headers.get("content-type"), truncated: buf.length > MAX_READ, body: buf.subarray(0, MAX_READ).toString("utf8") };
     },
+
+    "mcp.servers": async () => ({ servers: Object.keys(cfg.mcpServers) }),
+
+    "mcp.tools": async ({ server }) => withMcpServer(String(server), async (c) => {
+      const r = await c.listTools();
+      return { server, tools: r.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })) };
+    }),
+
+    "mcp.call": async ({ server, tool, args }) => withMcpServer(String(server), async (c) => {
+      const r = await c.callTool({ name: String(tool), arguments: (args && typeof args === "object" ? args : {}) as Record<string, unknown> });
+      const text = JSON.stringify(r.content ?? []);
+      return { server, tool, is_error: r.isError ?? false, truncated: text.length > MAX_OUT, content: text.length > MAX_OUT ? text.slice(0, MAX_OUT) : r.content };
+    }),
 
     "proc.list": async ({ limit }) => {
       const n = Math.min(Math.max(Number(limit) || 15, 1), 50);

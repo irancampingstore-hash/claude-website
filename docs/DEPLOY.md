@@ -114,6 +114,7 @@ git clone <repo-url> && cd claude-website && npm ci && npm run build
 ```
 اجرا: `npm run agent` (برای اجرای دائم: Task Scheduler در ویندوز یا systemd/launchd). فقط اتصال **خروجی** برقرار می‌شود.
 - `httpAllow`: فهرست آدرس‌هایی که هاب می‌تواند از طریق PC فقط با **GET** بخواند (مثلاً `["http://127.0.0.1:7422/fleet"]`)؛ سرویس‌هایی که فقط روی `127.0.0.1` همان PC گوش می‌دهند از VPS دیده نمی‌شوند و با ابزار `pc_http_get` در دسترس می‌شوند. بدون ارسال توکن و بدون دنبال‌کردن redirect.
+- `mcpServers` / `mcpConfigFile` + `mcpAllow`: **MCPهای stdio محلی** (دانش محلی، codegraph، ابزارهای فقط‌خواندنی…) از طریق هاب برای Claude/ChatGPT/Gemini در دسترس می‌شوند: `pc_mcp_servers`، `pc_mcp_tools`، `pc_mcp_call` (با تأیید). از یک `.mcp.json` موجود **فقط نام‌های فهرست `mcpAllow`** بیرون می‌آیند (آن فایل معمولاً سرورهای نوشتنی و secret هم دارد؛ مثلاً `aws … --allow-write` را عمداً مجاز نکنید). مقدار secretها روی PC می‌ماند. نمونه‌ی کامل: `agent.config.example.json`.
 - پیش‌فرض: هیچ پوشه‌ای باز نیست و اجرای دستور **خاموش** است. فقط وقتی لازم دارید `allowExec: true` کنید.
 - مدل‌ها: Ollama را نصب و `ollama pull qwen2.5:7b` بزنید؛ `local_ai_models` آن را می‌بیند.
 
@@ -144,6 +145,8 @@ Use case: *Instagram* → *API setup with Instagram login*. `IG_APP_ID`/`IG_APP_
 - `openai`: ایجنتی که `POST {baseUrl}/chat/completions` سازگار با OpenAI دارد.
 - `http`: هر REST دلخواه با `requestTemplate` (جایگزین‌ها: `{{message}}` `{{conversation_id}}` `{{context}}` `{{user}}`) و `responsePath` (مثل `data.reply`).
 - `mcp`: ایجنتی که خودش سرور MCP دارد؛ با `agent_mcp_list_tools` / `agent_mcp_call`.
+- `mcp` با `"transport": "sse"`: برای MCPهای قدیمی‌تر که SSE دارند (مثل Rahim MCP).
+- `mcp` با `"oauth": true`: ایجنتی که با OAuth 2.0 + PKCE وارد می‌شود (ForgeOps Operator). ادمین `agent_oauth_start` را می‌زند، لینک را در مرورگر باز می‌کند و روی سایت خود ایجنت تأیید می‌دهد؛ توکن‌ها رمزگذاری‌شده ذخیره و خودکار تمدید می‌شوند. آدرس بازگشت `https://<دامنه‌ی هاب>/agents/oauth/callback` است (ابزار همان را در `redirect_uri_to_allow` نشان می‌دهد؛ اگر آن سرور ثبت دستی می‌خواهد، همین را آنجا مجاز کنید، و اگر ثبت خودکار client ندارد، `oauthClientId` را در `agents.json` بدهید).
 - `queue`: ایجنتی بدون endpoint مستقیم (Agent One، نقش‌های Barney)؛ فقط `agent_handoff` و گذرگاه رویداد. ثبت کار در صف به‌معنی اجرا نیست.
 
 توکن‌ها در فایل نیستند؛ `authEnv` نام متغیر محیطی را می‌دهد. برای ارتباط **از ایجنت به هاب** (گزارش، تحویل نتیجه، گرفتن کار صف‌شده):

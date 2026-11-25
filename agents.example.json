@@ -29,6 +29,14 @@
       "name": "Agent One",
       "description": "هماهنگی/اجرا از طریق ic-bridge/v1 (دریافت، ACK، اجرا، تأیید مستقل). تا مشخص شدن قرارداد واقعی فقط صف",
       "protocol": "queue"
+    },
+    {
+      "id": "forgeops-operator",
+      "name": "ForgeOps Operator (OAuth)",
+      "description": "MCP مدیریتی ForgeOps روی staging.irancamping.com با OAuth 2.0 + PKCE. بعد از راه‌اندازی، ادمین ابزار agent_oauth_start را بزند و لینک را باز کند. ابزارهای پرخطر (executor/high-risk) هم داخلش هست؛ فقط با agent_mcp_call و تأیید",
+      "protocol": "mcp",
+      "oauth": true,
+      "baseUrl": "https://staging.irancamping.com/wp-json/forgeops-native/v1/operator"
     }
   ]
 }

@@ -1,10 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { z } from "zod";
 import type { Hub } from "../core/hub.js";
 import type { Connector, ToolDef } from "../core/types.js";
-import { safeEqual } from "../core/crypto.js";
+import { hmac, safeEqual } from "../core/crypto.js";
 import { http } from "../util/http.js";
 import { HubError, truncate } from "../util/text.js";
 import { clampInt, tool } from "./helpers.js";
@@ -25,6 +28,13 @@ export interface AgentDef {
   authEnv?: string;
   authHeader?: string; // default Authorization
   authPrefix?: string; // default "Bearer "
+  /** mcp protocol: sign in with OAuth 2.0 (authorization code + PKCE) instead of a static header — see agent_oauth_start */
+  oauth?: boolean;
+  /** Pre-registered public client id, if the server has no dynamic client registration. */
+  oauthClientId?: string;
+  oauthScope?: string;
+  /** mcp protocol: "streamable-http" (default) or legacy "sse" */
+  transport?: "streamable-http" | "sse";
   /** openai protocol */
   model?: string;
   systemPrompt?: string;
@@ -81,6 +91,74 @@ export function extractReply(json: unknown, text: string, responsePath?: string)
   return truncate(json !== undefined ? JSON.stringify(json) : text, 8000);
 }
 
+/** OAuth client state for one agent, persisted (encrypted) in the hub database so tokens survive restarts and refresh automatically. */
+class AgentOAuth implements OAuthClientProvider {
+  captured?: string;
+  constructor(
+    private readonly hub: Hub,
+    private readonly agent: AgentDef,
+  ) {}
+  private get redirect() {
+    return `${this.hub.config.publicUrl}/agents/oauth/callback`;
+  }
+  private k(name: string) {
+    return `agentoauth:${this.agent.id}:${name}`;
+  }
+  private load<T>(name: string): T | undefined {
+    const v = this.hub.db.getSecret(this.k(name));
+    return v ? (JSON.parse(v) as T) : undefined;
+  }
+  private store(name: string, v: unknown) {
+    this.hub.db.setSecret(this.k(name), JSON.stringify(v));
+  }
+  get redirectUrl() {
+    return this.redirect;
+  }
+  get clientMetadata(): OAuthClientMetadata {
+    return { client_name: "Iran Camping Hub", redirect_uris: [this.redirect], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none", scope: this.agent.oauthScope };
+  }
+  state(): string {
+    const body = Buffer.from(JSON.stringify({ a: this.agent.id, e: Date.now() + 15 * 60_000 })).toString("base64url");
+    return `${body}.${hmac(this.hub.config.secret, "agent-oauth-state", body)}`;
+  }
+  clientInformation(): OAuthClientInformationMixed | undefined {
+    return this.agent.oauthClientId ? { client_id: this.agent.oauthClientId } : this.load<OAuthClientInformationMixed>("client");
+  }
+  saveClientInformation(i: OAuthClientInformationMixed) {
+    this.store("client", i);
+  }
+  tokens(): OAuthTokens | undefined {
+    return this.load<OAuthTokens>("tokens");
+  }
+  saveTokens(t: OAuthTokens) {
+    this.store("tokens", t);
+  }
+  redirectToAuthorization(url: URL) {
+    this.captured = url.toString();
+  }
+  saveCodeVerifier(v: string) {
+    this.store("verifier", v);
+  }
+  codeVerifier(): string {
+    const v = this.load<string>("verifier");
+    if (!v) throw new Error("No PKCE verifier stored — start again with agent_oauth_start.");
+    return v;
+  }
+  invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery") {
+    if (scope === "all" || scope === "tokens") this.hub.db.deleteSecret(this.k("tokens"));
+    if (scope === "all" || scope === "client") this.hub.db.deleteSecret(this.k("client"));
+  }
+}
+
+/** Verify the signed `state` of an OAuth redirect and return the agent id it was issued for. */
+export function agentFromOAuthState(secret: string, state: string): string {
+  const [body, sig] = state.split(".");
+  if (!body || !sig || !safeEqual(sig, hmac(secret, "agent-oauth-state", body))) throw new HubError("Invalid state.", "bad_state");
+  const c = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as { a: string; e: number };
+  if (c.e < Date.now()) throw new HubError("The authorization link expired. Start again.", "expired");
+  return c.a;
+}
+
 export function createAgentsConnector(hub: Hub): Connector {
   const agents = loadAgents(hub.config.agentsConfigPath);
   const byId = (id: string): AgentDef => {
@@ -128,13 +206,52 @@ export function createAgentsConnector(hub: Hub): Connector {
   async function withMcp<T>(a: AgentDef, fn: (c: Client) => Promise<T>): Promise<T> {
     if (a.protocol !== "mcp") throw new HubError(`Agent ${a.id} is not an MCP agent (protocol=${a.protocol}).`, "wrong_protocol");
     const client = new Client({ name: "iran-camping-hub", version: "0.1.0" });
-    const transport = new StreamableHTTPClientTransport(new URL(a.baseUrl!), { requestInit: { headers: authHeaders(a) } });
+    const oauth = a.oauth ? new AgentOAuth(hub, a) : undefined;
+    if (oauth && !oauth.tokens()) throw new HubError(`Agent "${a.id}" is not signed in. An admin must run agent_oauth_start and open the link.`, "not_connected");
+    const headers = oauth ? {} : authHeaders(a);
+    const transport =
+      a.transport === "sse"
+        ? new SSEClientTransport(new URL(a.baseUrl!), {
+            authProvider: oauth,
+            requestInit: { headers },
+            // the EventSource handshake needs the headers too (not only POSTs)
+            eventSourceInit: { fetch: (input: any, init: any) => fetch(input, { ...init, headers: { ...(init?.headers ?? {}), ...headers } }) } as any,
+          })
+        : new StreamableHTTPClientTransport(new URL(a.baseUrl!), { authProvider: oauth, requestInit: { headers } });
     try {
       await client.connect(transport);
       return await fn(client);
+    } catch (e) {
+      if (e instanceof UnauthorizedError) throw new HubError(`Agent "${a.id}" rejected the stored sign-in (expired/revoked). An admin must run agent_oauth_start again.`, "reauth_required");
+      throw e;
     } finally {
       await client.close().catch(() => undefined);
     }
+  }
+
+  /** Begin OAuth: returns the authorization URL, or says the agent is already signed in. */
+  async function oauthStart(a: AgentDef): Promise<{ open_this_link?: string; already_signed_in?: boolean }> {
+    if (a.protocol !== "mcp" || !a.oauth) throw new HubError(`Agent ${a.id} is not configured with "oauth": true (protocol mcp).`, "wrong_protocol");
+    const oauth = new AgentOAuth(hub, a);
+    const client = new Client({ name: "iran-camping-hub", version: "0.1.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(a.baseUrl!), { authProvider: oauth });
+    try {
+      await client.connect(transport);
+      return { already_signed_in: true };
+    } catch (e) {
+      if (e instanceof UnauthorizedError && oauth.captured) return { open_this_link: oauth.captured };
+      throw new HubError(`Could not start sign-in: ${e instanceof Error ? e.message : String(e)}`, "oauth_failed");
+    } finally {
+      await client.close().catch(() => undefined);
+    }
+  }
+
+  /** Complete OAuth after the browser redirect (called by GET /agents/oauth/callback). */
+  async function oauthFinish(code: string, state: string): Promise<AgentDef> {
+    const a = byId(agentFromOAuthState(hub.config.secret, state));
+    const transport = new StreamableHTTPClientTransport(new URL(a.baseUrl!), { authProvider: new AgentOAuth(hub, a) });
+    await transport.finishAuth(code);
+    return a;
   }
 
   const agentId = z.string().describe("Agent id from agents_list, e.g. irancamping or barney");
@@ -173,6 +290,18 @@ export function createAgentsConnector(hub: Hub): Connector {
         const reply = await ask(def, a.message, a.conversation_id, a.context, ctx.user.name);
         return { agent: def.id, untrusted_agent_reply: truncate(reply, 12_000) };
       },
+    }),
+
+    tool({
+      name: "agent_oauth_start",
+      title: "Sign in to an OAuth agent (admin)",
+      description:
+        "For MCP agents that use OAuth 2.0 + PKCE (e.g. ForgeOps Operator): returns a one-time link. Open it in a browser, sign in on the agent's own site and approve; the hub stores the tokens encrypted and refreshes them automatically. Re-run it if sign-in ever expires.",
+      connector: "agents",
+      level: "admin",
+      input: { agent_id: agentId },
+      openWorld: true,
+      handler: async (a) => ({ ...(await oauthStart(byId(a.agent_id))), redirect_uri_to_allow: `${hub.config.publicUrl}/agents/oauth/callback` }),
     }),
 
     tool({
@@ -287,7 +416,7 @@ export function createAgentsConnector(hub: Hub): Connector {
     }),
   ];
 
-  hub.services.set("agents", { agents, byId, ask });
+  hub.services.set("agents", { agents, byId, ask, oauthFinish });
 
   return {
     id: "agents",
