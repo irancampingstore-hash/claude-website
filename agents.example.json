@@ -21,7 +21,11 @@
       "authEnv": "BARNEY_AGENT_TOKEN",
       "authHeader": "X-API-Key",
       "authPrefix": "",
-      "requestTemplate": { "message": "{{message}}", "session_id": "{{conversation_id}}", "user": "{{user}}" },
+      "requestTemplate": {
+        "message": "{{message}}",
+        "session_id": "{{conversation_id}}",
+        "user": "{{user}}"
+      },
       "responsePath": "data.reply"
     },
     {
@@ -31,6 +35,13 @@
       "protocol": "mcp",
       "baseUrl": "https://barney.example.com/mcp",
       "authEnv": "BARNEY_AGENT_TOKEN"
+    },
+    {
+      "id": "forgeops-public",
+      "name": "ForgeOps (عمومی، فقط‌خواندنی)",
+      "description": "MCP عمومی ForgeOps روی staging.irancamping.com؛ فقط status/discover/diagnostics. اتصال initialize هنوز تأیید نشده — بعد از اجرای tools/discover-agents.mjs فعال کنید",
+      "protocol": "mcp",
+      "baseUrl": "https://staging.irancamping.com/wp-json/forgeops-native/v1/mcp"
     }
   ]
 }
