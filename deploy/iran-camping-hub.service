@@ -1,0 +1,26 @@
+[Unit]
+Description=Iran Camping MCP Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mcphub
+WorkingDirectory=/opt/iran-camping-hub
+ExecStart=/usr/bin/node dist/server.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+Environment=NODE_NO_WARNINGS=1
+
+# hardening
+# NoNewPrivileges must stay OFF if VPS_MODE=local needs sudo for service restarts
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/iran-camping-hub/data
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

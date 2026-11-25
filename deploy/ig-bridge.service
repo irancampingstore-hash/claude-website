@@ -1,0 +1,19 @@
+[Unit]
+Description=Iran Camping Instagram bridge (instagrapi)
+After=network-online.target
+
+[Service]
+User=mcphub
+WorkingDirectory=/opt/iran-camping-hub/ig-bridge
+EnvironmentFile=/opt/iran-camping-hub/ig-bridge/bridge.env
+ExecStart=/opt/iran-camping-hub/ig-bridge/.venv/bin/python -m bridge
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/iran-camping-hub/ig-bridge/data
+
+[Install]
+WantedBy=multi-user.target
