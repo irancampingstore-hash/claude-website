@@ -123,14 +123,11 @@ export function createHubConnector(hub: Hub): Connector {
             const accs = i.listAccounts();
             const out = [];
             for (const acc of accs) {
-              const [profile, insights] = await Promise.allSettled([
-                i.api<any>(acc, "/me", { query: { fields: "username,followers_count,media_count" } }),
-                i.api<any>(acc, `/${acc.userId}/insights`, { query: { metric: "reach,views,accounts_engaged", period: "day", metric_type: "total_value", since: Math.floor(Date.now() / 1000) - hours * 3600, until: Math.floor(Date.now() / 1000) } }),
-              ]);
+              const [profile, insights] = await Promise.allSettled([i.profile(acc), i.accountInsights(acc, Math.max(1, Math.round(hours / 24)))]);
               out.push({
                 account: `@${acc.username}`,
                 followers: profile.status === "fulfilled" ? profile.value.followers_count : undefined,
-                insights: insights.status === "fulfilled" ? Object.fromEntries((insights.value.data ?? []).map((m: any) => [m.name, m.total_value?.value])) : `unavailable: ${(insights as PromiseRejectedResult).reason?.message ?? "error"}`,
+                insights: insights.status === "fulfilled" ? insights.value : `unavailable: ${(insights as PromiseRejectedResult).reason?.message ?? "error"}`,
               });
             }
             const pending = hub.db.get<{ n: number }>("SELECT COUNT(*) n FROM ig_scheduled WHERE status='pending'")?.n ?? 0;
@@ -204,7 +201,7 @@ export function createHubConnector(hub: Hub): Connector {
       title: "Draft replies for new Instagram comments",
       description:
         "Collect recent comments on the latest posts (and new inbox events), and optionally ask one of the company AI agents to draft a reply for each. Returns DRAFTS only — nothing is posted. " +
-        "Post approved replies afterwards with ig_reply_comment.",
+        "Post approved replies afterwards with ig_reply_comment (pass media_id too).",
       connector: "instagram",
       level: "read",
       input: {
@@ -217,14 +214,15 @@ export function createHubConnector(hub: Hub): Connector {
         const svc = ig();
         if (!svc) throw new HubError("Instagram is not configured.", "not_configured");
         const acc = svc.getAccount(a.account);
-        const media = (await svc.api<{ data: any[] }>(acc, "/me/media", { query: { fields: "id,caption,permalink", limit: clampInt(a.posts, 1, 10, 3) } })).data ?? [];
-        const comments: Array<{ id: string; post: string; username: string; text: string; replied: boolean }> = [];
-        for (const m of media) {
-          const r = await svc.api<{ data: any[] }>(acc, `/${m.id}/comments`, { query: { fields: "id,text,username,timestamp,replies{id,username}", limit: 15 } }).catch(() => ({ data: [] as any[] }));
-          for (const c of r.data ?? []) {
+        const media = await svc.listMedia(acc, clampInt(a.posts, 1, 10, 3));
+        const comments: Array<{ id: string; media_id: string; post: string; username: string; text: string; replied: boolean }> = [];
+        const all = await Promise.all(media.map((m) => svc.listComments(acc, m.id, 15).then((list) => ({ m, list }), () => ({ m, list: [] as any[] }))));
+        for (const { m, list } of all) {
+          const mine = new Set(list.filter((c) => c.username === acc.username && c.replied_to).map((c) => String(c.replied_to)));
+          for (const c of list) {
             if (c.username === acc.username) continue;
-            const replied = (c.replies?.data ?? []).some((x: any) => x.username === acc.username);
-            comments.push({ id: c.id, post: m.permalink, username: c.username, text: c.text, replied });
+            const replied = (c.replies?.data ?? []).some((x: any) => x.username === acc.username) || mine.has(String(c.id));
+            comments.push({ id: c.id, media_id: m.id, post: m.permalink, username: c.username, text: c.text, replied });
           }
         }
         const open = comments.filter((c) => !c.replied).slice(0, 12);

@@ -39,6 +39,11 @@ export interface InstagramConfig {
   tokenUrl: string;
   /** Programmatic only (tests): skip the public-host check for media URLs. */
   allowPrivateUrls?: boolean;
+  /** Instagram bridge (instagrapi sidecar, no Meta developer app needed). */
+  bridgeUrl?: string;
+  bridgeToken?: string;
+  /** Minutes between inbox polls for bridge accounts (0 = off). */
+  pollMinutes: number;
 }
 
 export interface HubConfig {
@@ -113,7 +118,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HubConfig {
       : undefined;
 
   const instagram: InstagramConfig | undefined =
-    env.IG_APP_ID || env.IG_APP_SECRET
+    env.IG_APP_ID || env.IG_APP_SECRET || env.IG_BRIDGE_URL
       ? {
           appId: env.IG_APP_ID,
           appSecret: env.IG_APP_SECRET,
@@ -122,6 +127,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HubConfig {
           webhookVerifyToken: env.IG_WEBHOOK_VERIFY_TOKEN,
           graphBase: (env.IG_GRAPH_BASE ?? "https://graph.instagram.com").replace(/\/+$/, ""),
           tokenUrl: env.IG_TOKEN_URL ?? "https://api.instagram.com/oauth/access_token",
+          bridgeUrl: env.IG_BRIDGE_URL?.replace(/\/+$/, ""),
+          bridgeToken: env.IG_BRIDGE_TOKEN,
+          pollMinutes: Number(env.IG_POLL_MINUTES ?? 10),
           scopes: list(
             env.IG_SCOPES ??
               "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments,instagram_business_manage_messages,instagram_business_manage_insights",

@@ -3,7 +3,7 @@ import type { Hub } from "../core/hub.js";
 import type { Connector, ToolDef } from "../core/types.js";
 import { HubError } from "../util/text.js";
 import { clampInt, tool } from "./helpers.js";
-import { InstagramService, type PublishPayload } from "./instagram-service.js";
+import { InstagramService, isPrivate, type PublishPayload } from "./instagram-service.js";
 
 const account = z.string().optional().describe("Instagram account label (omit if only one is connected; see ig_accounts)");
 
@@ -45,7 +45,8 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       input: {},
       handler: () => ({
         redirect_uri_to_register_in_meta_app: ig.redirectUri,
-        accounts: ig.listAccounts().map((a) => ({ label: a.label, username: a.username, type: a.accountType, token_days_left: Math.round((a.expiresAt - Date.now()) / 86_400_000) })),
+        bridge_configured: !!ig.bridge,
+        accounts: ig.listAccounts().map((a) => ({ label: a.label, username: a.username, type: a.accountType, provider: isPrivate(a) ? "bridge (no Meta app)" : "official API", ...(isPrivate(a) ? {} : { token_days_left: Math.round((a.expiresAt - Date.now()) / 86_400_000) }) })),
       }),
     }),
 
@@ -63,6 +64,23 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
         valid_minutes: 15,
         redirect_uri_must_be_registered: ig.redirectUri,
       }),
+    }),
+
+    tool({
+      name: "ig_link_bridge_account",
+      title: "Link an Instagram bridge account (admin)",
+      description:
+        "Register an Instagram session that is already stored in the bridge (no Meta developer app needed). The session must be imported first with `node dist/cli.js ig import` — never paste cookies or passwords into chat.",
+      connector: "instagram",
+      level: "admin",
+      input: {
+        label: z.string().min(2).max(30).describe("Name for this account in the hub, e.g. irancamping"),
+        bridge_account: z.string().min(2).max(30).describe("Account name inside the bridge (the --name used at import)"),
+      },
+      handler: async (a) => {
+        const acc = await ig.linkBridgeAccount(a.label, a.bridge_account);
+        return { linked: acc.label, username: `@${acc.username}`, type: acc.accountType };
+      },
     }),
 
     tool({
@@ -88,7 +106,9 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       level: "admin",
       input: { account },
       handler: async (a) => {
-        const acc = await ig.refresh(ig.getAccount(a.account));
+        const cur = ig.getAccount(a.account);
+        if (isPrivate(cur)) throw new HubError("Bridge accounts have no token to refresh. If Instagram logged the session out, re-import it.", "unsupported");
+        const acc = await ig.refresh(cur);
         return { account: acc.label, days_left: Math.round((acc.expiresAt - Date.now()) / 86_400_000) };
       },
     }),
@@ -102,6 +122,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       input: { account, fields: z.string().optional().describe("Comma-separated, default comments,messages,mentions") },
       handler: async (a) => {
         const acc = ig.getAccount(a.account);
+        if (isPrivate(acc)) throw new HubError("Webhooks do not exist for bridge accounts; the hub polls instead (IG_POLL_MINUTES).", "unsupported");
         const r = await ig.api(acc, `/${acc.userId}/subscribed_apps`, { method: "POST", query: { subscribed_fields: a.fields ?? "comments,messages,mentions" } });
         return { ...r, webhook_url: `${hub.config.publicUrl}/instagram/webhook`, verify_token_configured: !!cfg.webhookVerifyToken };
       },
@@ -116,10 +137,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       level: "read",
       input: { account },
       openWorld: true,
-      handler: async (a) => {
-        const acc = ig.getAccount(a.account);
-        return ig.api(acc, "/me", { query: { fields: "user_id,username,name,account_type,biography,followers_count,follows_count,media_count,website" } });
-      },
+      handler: async (a) => ig.profile(ig.getAccount(a.account)),
     }),
 
     tool({
@@ -130,13 +148,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       level: "read",
       input: { limit: z.number().int().min(1).max(50).optional().describe("How many (default 10)"), account },
       openWorld: true,
-      handler: async (a) => {
-        const acc = ig.getAccount(a.account);
-        const r = await ig.api<{ data: any[] }>(acc, "/me/media", {
-          query: { fields: "id,caption,media_type,media_product_type,permalink,timestamp,like_count,comments_count,thumbnail_url,media_url", limit: clampInt(a.limit, 1, 50, 10) },
-        });
-        return r.data;
-      },
+      handler: async (a) => ig.listMedia(ig.getAccount(a.account), clampInt(a.limit, 1, 50, 10)),
     }),
 
     tool({
@@ -151,11 +163,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
         account,
       },
       openWorld: true,
-      handler: async (a) => {
-        const acc = ig.getAccount(a.account);
-        const r = await ig.api<{ data: any[] }>(acc, `/${a.media_id}/insights`, { query: { metric: a.metrics ?? "reach,likes,comments,saved,shares,total_interactions" } });
-        return Object.fromEntries((r.data ?? []).map((m) => [m.name, m.values?.[0]?.value ?? m.total_value?.value]));
-      },
+      handler: async (a) => ig.mediaInsights(ig.getAccount(a.account), a.media_id, a.metrics),
     }),
 
     tool({
@@ -170,15 +178,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
         account,
       },
       openWorld: true,
-      handler: async (a) => {
-        const acc = ig.getAccount(a.account);
-        const until = Math.floor(Date.now() / 1000);
-        const since = until - clampInt(a.days, 1, 30, 7) * 86_400;
-        const r = await ig.api<{ data: any[] }>(acc, `/${acc.userId}/insights`, {
-          query: { metric: a.metrics ?? "reach,views,profile_views,accounts_engaged,total_interactions", period: "day", metric_type: "total_value", since, until },
-        });
-        return Object.fromEntries((r.data ?? []).map((m) => [m.name, m.total_value?.value]));
-      },
+      handler: async (a) => ig.accountInsights(ig.getAccount(a.account), clampInt(a.days, 1, 30, 7), a.metrics),
     }),
 
     tool({
@@ -191,6 +191,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       openWorld: true,
       handler: async (a) => {
         const acc = ig.getAccount(a.account);
+        if (isPrivate(acc)) return ig.bridge!.call("GET", "/pacing");
         return ig.api(acc, `/${acc.userId}/content_publishing_limit`, { query: { fields: "quota_usage,config" } });
       },
     }),
@@ -203,13 +204,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       level: "read",
       input: { media_id: z.string().describe("Media ID"), limit: z.number().int().min(1).max(50).optional().describe("Default 25"), account },
       openWorld: true,
-      handler: async (a) => {
-        const acc = ig.getAccount(a.account);
-        const r = await ig.api<{ data: any[] }>(acc, `/${a.media_id}/comments`, {
-          query: { fields: "id,text,username,timestamp,like_count,hidden,replies{id,text,username,timestamp}", limit: clampInt(a.limit, 1, 50, 25) },
-        });
-        return r.data;
-      },
+      handler: async (a) => ig.listComments(ig.getAccount(a.account), a.media_id, clampInt(a.limit, 1, 50, 25)),
     }),
 
     tool({
@@ -220,11 +215,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       level: "read",
       input: { limit: z.number().int().min(1).max(25).optional().describe("Default 10"), account },
       openWorld: true,
-      handler: async (a) => {
-        const acc = ig.getAccount(a.account);
-        const r = await ig.api<{ data: any[] }>(acc, "/me/conversations", { query: { platform: "instagram", fields: "id,updated_time,participants", limit: clampInt(a.limit, 1, 25, 10) } });
-        return r.data;
-      },
+      handler: async (a) => ig.listConversations(ig.getAccount(a.account), clampInt(a.limit, 1, 25, 10)),
     }),
 
     tool({
@@ -235,11 +226,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       level: "write",
       input: { conversation_id: z.string().describe("ID from ig_list_conversations"), limit: z.number().int().min(1).max(30).optional().describe("Default 15"), account },
       openWorld: true,
-      handler: async (a) => {
-        const acc = ig.getAccount(a.account);
-        const r = await ig.api<any>(acc, `/${a.conversation_id}`, { query: { fields: `messages.limit(${clampInt(a.limit, 1, 30, 15)}){id,created_time,from,to,message}` } });
-        return r.messages?.data ?? r;
-      },
+      handler: async (a) => ig.getConversation(ig.getAccount(a.account), a.conversation_id, clampInt(a.limit, 1, 30, 15)),
     }),
 
     /* ── inbox (webhook events) ── */
@@ -359,7 +346,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
         let payload: PublishPayload;
         if (a.kind === "photo") {
           if (!a.media_url) throw new HubError("media_url is required.", "bad_request");
-          await ig.assertImageOk(a.media_url);
+          if (!isPrivate(acc)) await ig.assertImageOk(a.media_url);
           payload = { kind: "image", image_url: a.media_url, caption: a.caption };
         } else if (a.kind === "reel") {
           if (!a.media_url) throw new HubError("media_url is required.", "bad_request");
@@ -413,11 +400,16 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       description: "Post a public reply to a comment. Needs user confirmation (it is public and appears under the account's name).",
       connector: "instagram",
       level: "write",
-      input: { comment_id: z.string().describe("Comment ID"), message: z.string().min(1).max(2200).describe("Reply text"), account },
+      input: {
+        comment_id: z.string().describe("Comment ID"),
+        message: z.string().min(1).max(2200).describe("Reply text"),
+        media_id: z.string().optional().describe("ID of the post the comment is on (REQUIRED for bridge accounts)"),
+        account,
+      },
       confirm: true,
       preview: (a) => ({ account: `@${ig.getAccount(a.account).username}`, replying_to_comment: a.comment_id, message: a.message }),
       openWorld: true,
-      handler: async (a) => ig.api(ig.getAccount(a.account), `/${a.comment_id}/replies`, { method: "POST", query: { message: a.message } }),
+      handler: async (a) => ig.replyComment(ig.getAccount(a.account), a.comment_id, a.message, a.media_id),
     }),
 
     tool({
@@ -428,7 +420,7 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       level: "write",
       input: { comment_id: z.string().describe("Comment ID"), hide: z.boolean().describe("true to hide, false to unhide"), account },
       openWorld: true,
-      handler: async (a) => ig.api(ig.getAccount(a.account), `/${a.comment_id}`, { method: "POST", query: { hide: a.hide } }),
+      handler: async (a) => ig.hideComment(ig.getAccount(a.account), a.comment_id, a.hide),
     }),
 
     tool({
@@ -437,11 +429,11 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
       description: "Permanently delete a comment. Admin only; needs confirmation.",
       connector: "instagram",
       level: "admin",
-      input: { comment_id: z.string().describe("Comment ID"), account },
+      input: { comment_id: z.string().describe("Comment ID"), media_id: z.string().optional().describe("Post ID (REQUIRED for bridge accounts)"), account },
       confirm: true,
       destructive: true,
       openWorld: true,
-      handler: async (a) => ig.api(ig.getAccount(a.account), `/${a.comment_id}`, { method: "DELETE" }),
+      handler: async (a) => ig.deleteComment(ig.getAccount(a.account), a.comment_id, a.media_id),
     }),
 
     tool({
@@ -451,14 +443,16 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
         "Send a DM reply. Instagram only allows replies within 24 hours of the customer's last message. Needs user confirmation.",
       connector: "instagram",
       level: "write",
-      input: { recipient_id: z.string().describe("Instagram-scoped user ID of the customer (from the conversation/inbox)"), text: z.string().min(1).max(1000).describe("Message text"), account },
-      confirm: true,
-      preview: (a) => ({ account: `@${ig.getAccount(a.account).username}`, to: a.recipient_id, text: a.text, warning: "Private message sent from the business account." }),
-      openWorld: true,
-      handler: async (a) => {
-        const acc = ig.getAccount(a.account);
-        return ig.api(acc, `/${acc.userId}/messages`, { method: "POST", json: { recipient: { id: a.recipient_id }, message: { text: a.text } } });
+      input: {
+        recipient_id: z.string().optional().describe("User ID of the customer (official API accounts; also works for bridge accounts to start a chat)"),
+        thread_id: z.string().optional().describe("Conversation ID from ig_list_conversations (bridge accounts: preferred way to answer)"),
+        text: z.string().min(1).max(1000).describe("Message text"),
+        account,
       },
+      confirm: true,
+      preview: (a) => ({ account: `@${ig.getAccount(a.account).username}`, to: a.thread_id ?? a.recipient_id, text: a.text, warning: "Private message sent from the business account." }),
+      openWorld: true,
+      handler: async (a) => ig.sendDm(ig.getAccount(a.account), { recipientId: a.recipient_id, threadId: a.thread_id }, a.text),
     }),
   ];
 
@@ -469,8 +463,13 @@ export function createInstagramConnector(hub: Hub): Connector | undefined {
     tools,
     async health() {
       const accs = ig.listAccounts();
-      if (!accs.length) return { ok: false, detail: "no account connected (use ig_connect_start)" };
-      const soon = accs.filter((a) => a.expiresAt - Date.now() < 7 * 86_400_000);
+      if (!accs.length) return { ok: false, detail: "no account connected (ig_connect_start for the official API, or ig_link_bridge_account for the bridge)" };
+      const bridgeAccs = accs.filter(isPrivate);
+      if (bridgeAccs.length && ig.bridge) {
+        const down = await ig.bridge.call("GET", "/health").then(() => false, () => true);
+        if (down) return { ok: false, detail: "Instagram bridge is not reachable" };
+      }
+      const soon = accs.filter((a) => !isPrivate(a) && a.expiresAt - Date.now() < 7 * 86_400_000);
       return { ok: soon.length === 0, detail: `${accs.map((a) => "@" + a.username).join(", ")}${soon.length ? ` — token expiring soon: ${soon.map((a) => a.label).join(", ")}` : ""}` };
     },
     start: () => ig.start(),

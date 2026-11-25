@@ -6,6 +6,7 @@ import { http } from "../util/http.js";
 import { HubError } from "../util/text.js";
 import { assertPublicUrl, fetchPublic } from "../util/ssrf.js";
 import type { InstagramConfig } from "../core/config.js";
+import { BridgeClient } from "./ig-bridge-client.js";
 
 /**
  * Instagram API with Instagram Login ("Business Login for Instagram").
@@ -22,7 +23,13 @@ export interface IgAccount {
   expiresAt: number;
   accountType?: string;
   refreshedAt: number;
+  /** "graph" = official API (Meta app + OAuth); "private" = instagrapi bridge session. Default graph. */
+  provider?: "graph" | "private";
+  /** Account name inside the bridge (provider = private). */
+  bridgeAccount?: string;
 }
+
+export const isPrivate = (a: IgAccount) => a.provider === "private";
 
 export type PublishPayload =
   | { kind: "image"; image_url: string; caption?: string; alt_text?: string }
@@ -36,10 +43,19 @@ const isVideoUrl = (u: string) => /\.(mp4|mov)(\?|$)/i.test(u);
 export class InstagramService {
   private timers: NodeJS.Timeout[] = [];
 
+  readonly bridge?: BridgeClient;
+
   constructor(
     private readonly hub: Hub,
     readonly cfg: InstagramConfig,
-  ) {}
+  ) {
+    if (cfg.bridgeUrl && cfg.bridgeToken) this.bridge = new BridgeClient(cfg.bridgeUrl, cfg.bridgeToken);
+  }
+
+  private needBridge(acc: IgAccount): { b: BridgeClient; name: string } {
+    if (!this.bridge || !acc.bridgeAccount) throw new HubError("The Instagram bridge is not configured (IG_BRIDGE_URL / IG_BRIDGE_TOKEN).", "not_configured");
+    return { b: this.bridge, name: acc.bridgeAccount };
+  }
 
   private get GRAPH(): string {
     return this.cfg.graphBase;
@@ -193,6 +209,179 @@ export class InstagramService {
     return new HubError(`Instagram API error ${code ?? status}: ${msg}.${hint}`, "instagram_error", status);
   }
 
+  /* ───────── unified operations (official API or bridge; same shapes for the tools) ───────── */
+
+  async profile(acc: IgAccount): Promise<any> {
+    if (isPrivate(acc)) {
+      const { b, name } = this.needBridge(acc);
+      return b.call("GET", `/accounts/${name}/me`);
+    }
+    return this.api(acc, "/me", { query: { fields: "user_id,username,name,account_type,biography,followers_count,follows_count,media_count,website" } });
+  }
+
+  async listMedia(acc: IgAccount, limit: number): Promise<any[]> {
+    if (isPrivate(acc)) {
+      const { b, name } = this.needBridge(acc);
+      const r = await b.call<{ items: any[] }>("GET", `/accounts/${name}/media`, { query: { limit } });
+      return r.items.map((m) => ({ id: m.pk, caption: m.caption, media_type: m.media_type, media_product_type: m.product_type, permalink: m.permalink, timestamp: m.taken_at, like_count: m.like_count, comments_count: m.comment_count, thumbnail_url: m.thumbnail_url }));
+    }
+    const r = await this.api<{ data: any[] }>(acc, "/me/media", { query: { fields: "id,caption,media_type,media_product_type,permalink,timestamp,like_count,comments_count,thumbnail_url,media_url", limit } });
+    return r.data;
+  }
+
+  async mediaInsights(acc: IgAccount, mediaId: string, metrics?: string): Promise<any> {
+    if (isPrivate(acc)) {
+      const { b, name } = this.needBridge(acc);
+      return (await b.call<{ insights: unknown }>("GET", `/accounts/${name}/media/${mediaId}/insights`)).insights;
+    }
+    const r = await this.api<{ data: any[] }>(acc, `/${mediaId}/insights`, { query: { metric: metrics ?? "reach,likes,comments,saved,shares,total_interactions" } });
+    return Object.fromEntries((r.data ?? []).map((m) => [m.name, m.values?.[0]?.value ?? m.total_value?.value]));
+  }
+
+  async accountInsights(acc: IgAccount, days: number, metrics?: string): Promise<any> {
+    if (isPrivate(acc)) {
+      const { b, name } = this.needBridge(acc);
+      return (await b.call<{ insights: unknown }>("GET", `/accounts/${name}/insights`)).insights;
+    }
+    const until = Math.floor(Date.now() / 1000);
+    const r = await this.api<{ data: any[] }>(acc, `/${acc.userId}/insights`, {
+      query: { metric: metrics ?? "reach,views,profile_views,accounts_engaged,total_interactions", period: "day", metric_type: "total_value", since: until - days * 86_400, until },
+    });
+    return Object.fromEntries((r.data ?? []).map((m) => [m.name, m.total_value?.value]));
+  }
+
+  async listComments(acc: IgAccount, mediaId: string, limit: number): Promise<any[]> {
+    if (isPrivate(acc)) {
+      const { b, name } = this.needBridge(acc);
+      const r = await b.call<{ items: any[] }>("GET", `/accounts/${name}/media/${mediaId}/comments`, { query: { limit } });
+      return r.items.map((c) => ({ id: c.pk, text: c.text, username: c.username, timestamp: c.created_at, like_count: c.like_count, replied_to: c.replied_to ?? undefined }));
+    }
+    const r = await this.api<{ data: any[] }>(acc, `/${mediaId}/comments`, { query: { fields: "id,text,username,timestamp,like_count,hidden,replies{id,text,username,timestamp}", limit } });
+    return r.data;
+  }
+
+  async replyComment(acc: IgAccount, commentId: string, text: string, mediaId?: string): Promise<any> {
+    if (isPrivate(acc)) {
+      if (!mediaId) throw new HubError("media_id is required to reply with a bridge account (the post the comment is on).", "bad_request");
+      const { b, name } = this.needBridge(acc);
+      return b.call("POST", `/accounts/${name}/comments/reply`, { json: { media_pk: mediaId, comment_pk: commentId, text } });
+    }
+    return this.api(acc, `/${commentId}/replies`, { method: "POST", query: { message: text } });
+  }
+
+  async hideComment(acc: IgAccount, commentId: string, hide: boolean): Promise<any> {
+    if (isPrivate(acc)) throw new HubError("Hiding comments is not available through the bridge; use ig_delete_comment.", "unsupported");
+    return this.api(acc, `/${commentId}`, { method: "POST", query: { hide } });
+  }
+
+  async deleteComment(acc: IgAccount, commentId: string, mediaId?: string): Promise<any> {
+    if (isPrivate(acc)) {
+      if (!mediaId) throw new HubError("media_id is required to delete a comment with a bridge account.", "bad_request");
+      const { b, name } = this.needBridge(acc);
+      return b.call("POST", `/accounts/${name}/comments/delete`, { json: { media_pk: mediaId, comment_pks: [commentId] } });
+    }
+    return this.api(acc, `/${commentId}`, { method: "DELETE" });
+  }
+
+  async listConversations(acc: IgAccount, limit: number, unreadOnly = false): Promise<any[]> {
+    if (isPrivate(acc)) {
+      const { b, name } = this.needBridge(acc);
+      const r = await b.call<{ items: any[] }>("GET", `/accounts/${name}/direct/threads`, { query: { limit, unread_only: unreadOnly } });
+      return r.items.map((t) => ({ id: t.id, updated_time: t.last_activity_at, unread: t.unread, participants: t.users, last_message: t.messages?.[0]?.text }));
+    }
+    const r = await this.api<{ data: any[] }>(acc, "/me/conversations", { query: { platform: "instagram", fields: "id,updated_time,participants", limit } });
+    return r.data;
+  }
+
+  async getConversation(acc: IgAccount, id: string, limit: number): Promise<any> {
+    if (isPrivate(acc)) {
+      const { b, name } = this.needBridge(acc);
+      const r = await b.call<{ items: any[] }>("GET", `/accounts/${name}/direct/threads/${id}/messages`, { query: { limit } });
+      return r.items.map((m) => ({ id: m.id, created_time: m.timestamp, from: m.from_me ? "me" : m.user_id, message: m.text }));
+    }
+    const r = await this.api<any>(acc, `/${id}`, { query: { fields: `messages.limit(${limit}){id,created_time,from,to,message}` } });
+    return r.messages?.data ?? r;
+  }
+
+  async sendDm(acc: IgAccount, target: { recipientId?: string; threadId?: string }, text: string): Promise<any> {
+    if (isPrivate(acc)) {
+      if (!target.recipientId && !target.threadId) throw new HubError("Provide thread_id or recipient_id.", "bad_request");
+      const { b, name } = this.needBridge(acc);
+      return b.call("POST", `/accounts/${name}/direct/send`, { json: target.threadId ? { thread_id: target.threadId, text } : { user_id: target.recipientId, text } });
+    }
+    if (!target.recipientId) throw new HubError("recipient_id is required for official-API accounts.", "bad_request");
+    return this.api(acc, `/${acc.userId}/messages`, { method: "POST", json: { recipient: { id: target.recipientId }, message: { text } } });
+  }
+
+  /* ───────── bridge accounts ───────── */
+
+  /** Register a session that already exists inside the bridge (imported with the CLI / login_local.py). */
+  async linkBridgeAccount(label: string, bridgeAccount: string): Promise<IgAccount> {
+    if (!this.bridge) throw new HubError("Set IG_BRIDGE_URL and IG_BRIDGE_TOKEN first.", "not_configured");
+    const me = await this.bridge.call<any>("GET", `/accounts/${bridgeAccount}/me`);
+    const acc: IgAccount = {
+      label,
+      provider: "private",
+      bridgeAccount,
+      userId: String(me.pk),
+      username: me.username,
+      accessToken: "",
+      expiresAt: Date.now() + 3650 * 86_400_000,
+      accountType: me.is_business ? "BUSINESS" : "PERSONAL",
+      refreshedAt: Date.now(),
+    };
+    this.save(acc);
+    return acc;
+  }
+
+  private async publishPrivate(acc: IgAccount, p: PublishPayload): Promise<{ id: string; permalink?: string }> {
+    const { b, name } = this.needBridge(acc);
+    if ("caption" in p && p.caption && p.caption.length > 2200) throw new HubError("Caption exceeds 2200 characters.", "bad_caption");
+    let body: { kind: string; urls: string[]; caption?: string };
+    if (p.kind === "image") body = { kind: "photo", urls: [p.image_url], caption: p.caption };
+    else if (p.kind === "reel") body = { kind: "reel", urls: [p.video_url], caption: p.caption };
+    else if (p.kind === "story") {
+      const u = p.image_url ?? p.video_url;
+      if (!u) throw new HubError("Provide image_url or video_url for a story.", "bad_request");
+      body = { kind: "story", urls: [u] };
+    } else body = { kind: "carousel", urls: p.media_urls, caption: p.caption };
+    for (const u of body.urls) await this.pub(u);
+    const r = await b.call<{ pk: string; permalink?: string }>("POST", `/accounts/${name}/publish`, { json: body, timeoutMs: 600_000 });
+    return { id: r.pk, permalink: r.permalink ?? undefined };
+  }
+
+  /** Poll bridge accounts for new comments / unread DMs and put them into the shared inbox (no webhooks exist for this route). */
+  async pollPrivate(): Promise<number> {
+    let added = 0;
+    for (const acc of this.listAccounts().filter(isPrivate)) {
+      const key = `igseen:${acc.label}`;
+      const raw = this.hub.db.getSecret(key);
+      const first = raw === undefined;
+      const seen = new Set<string>(raw ? (JSON.parse(raw) as string[]) : []);
+      const add = (kind: string, id: string, payload: unknown) => {
+        if (seen.has(id)) return;
+        seen.add(id);
+        if (first) return; // first run only records a baseline, it does not flood the inbox with old items
+        this.hub.db.run("INSERT INTO inbox(source, kind, payload, ts) VALUES('instagram', ?, ?, ?)", kind, JSON.stringify({ account: acc.label, ...(payload as object) }), Date.now());
+        added++;
+      };
+      try {
+        for (const m of (await this.listMedia(acc, 3)).slice(0, 3)) {
+          for (const c of await this.listComments(acc, m.id, 15)) {
+            if (c.username !== acc.username) add("comments", `c:${c.id}`, { media_id: m.id, comment_id: c.id, username: c.username, text: c.text, post: m.permalink });
+          }
+        }
+        for (const t of await this.listConversations(acc, 10, true)) {
+          if (t.unread) add("message", `t:${t.id}:${t.updated_time}`, { thread_id: t.id, from: t.participants?.map((u: any) => u.username).join(","), last_message: t.last_message });
+        }
+        this.hub.db.setSecret(key, JSON.stringify([...seen].slice(-1000)));
+      } catch (e) {
+        this.hub.audit.record({ userId: "poller", tool: "ig_poll_private", connector: "instagram", outcome: "error", args: { account: acc.label }, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return added;
+  }
+
   /* ───────── publishing ───────── */
 
   async assertImageOk(url: string): Promise<void> {
@@ -215,6 +404,11 @@ export class InstagramService {
   }
 
   async publish(acc: IgAccount, p: PublishPayload): Promise<{ id: string; permalink?: string }> {
+    if (isPrivate(acc)) return this.publishPrivate(acc, p);
+    return this.publishGraph(acc, p);
+  }
+
+  private async publishGraph(acc: IgAccount, p: PublishPayload): Promise<{ id: string; permalink?: string }> {
     if ("caption" in p && p.caption && p.caption.length > 2200) throw new HubError("Caption exceeds 2200 characters.", "bad_caption");
     if ("caption" in p && p.caption && (p.caption.match(/#/g) ?? []).length > 30) throw new HubError("Instagram allows at most 30 hashtags.", "bad_caption");
     let creation: string;
@@ -297,7 +491,7 @@ export class InstagramService {
 
   async refreshDue(): Promise<void> {
     for (const acc of this.listAccounts()) {
-      const stale = Date.now() - acc.refreshedAt > 7 * 86_400_000;
+      const stale = !isPrivate(acc) && Date.now() - acc.refreshedAt > 7 * 86_400_000;
       if (stale && acc.expiresAt > Date.now()) await this.refresh(acc).catch(() => undefined);
     }
   }
@@ -307,6 +501,9 @@ export class InstagramService {
     this.hub.db.run("UPDATE ig_scheduled SET status = 'failed', result = 'interrupted by restart — check Instagram before retrying' WHERE status = 'running'");
     this.timers.push(setInterval(() => void this.tick(), 30_000));
     this.timers.push(setInterval(() => void this.refreshDue(), 6 * 3_600_000));
+    if (this.bridge && this.cfg.pollMinutes > 0) {
+      this.timers.push(setInterval(() => void this.pollPrivate(), this.cfg.pollMinutes * 60_000 + Math.floor(Math.random() * 60_000)));
+    }
     for (const t of this.timers) t.unref();
   }
 

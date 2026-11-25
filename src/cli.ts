@@ -13,6 +13,8 @@ Iran Camping hub — admin CLI
   node dist/cli.js user role <name> <role> [--grant connector=level ...]
   node dist/cli.js user rotate <name>             issue a new access key (old one stops working)
   node dist/cli.js user disable <name> | enable <name> | remove <name>
+  node dist/cli.js ig import --bridge-account NAME --file session.json   upload an Instagram session to the bridge
+  node dist/cli.js ig status                      bridge accounts and today's pacing counters
   node dist/cli.js roles                          show role presets
   node dist/cli.js tools [--user <name>]          list tools (all, or what one user sees)
   node dist/cli.js doctor                         check configuration and connectivity
@@ -96,6 +98,21 @@ async function main(): Promise<void> {
         default:
           console.log(HELP);
       }
+    } else if (cmd === "ig") {
+      const bridge = (await import("./connectors/ig-bridge-client.js")).BridgeClient;
+      if (!cfg.instagram?.bridgeUrl || !cfg.instagram.bridgeToken) throw new Error("Set IG_BRIDGE_URL and IG_BRIDGE_TOKEN in .env first");
+      const b = new bridge(cfg.instagram.bridgeUrl, cfg.instagram.bridgeToken);
+      const args = rest;
+      if (sub === "import") {
+        const name = flag(args, "bridge-account");
+        const file = flag(args, "file");
+        if (!name || !file) throw new Error("usage: ig import --bridge-account NAME --file session.json");
+        const settings = JSON.parse((await import("node:fs")).readFileSync(file, "utf8"));
+        await b.call("POST", `/accounts/${name}/session`, { json: { settings } });
+        console.log(`Session imported as "${name}". Now link it in chat:  ig_link_bridge_account (label + bridge_account=${name}). Delete ${file} from this machine afterwards.`);
+      } else if (sub === "status") {
+        console.log(JSON.stringify(await b.call("GET", "/accounts"), null, 2));
+      } else console.log(HELP);
     } else if (cmd === "tools") {
       const who = flag([sub ?? "", ...rest], "user") ?? (sub === "--user" ? rest[0] : undefined);
       const user = who ? hub.users.list().find((u) => u.name === who) : undefined;

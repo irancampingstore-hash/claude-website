@@ -10,3 +10,10 @@ agents.json
 agent.config.json
 hub.users.json
 coverage/
+ig-bridge/data/
+ig-bridge/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+ig-bridge/*.json
+!ig-bridge/requirements*.json

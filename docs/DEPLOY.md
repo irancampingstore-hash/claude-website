@@ -66,18 +66,27 @@ git clone <repo-url> && cd claude-website && npm ci && npm run build
 - پیش‌فرض: هیچ پوشه‌ای باز نیست و اجرای دستور **خاموش** است. فقط وقتی لازم دارید `allowExec: true` کنید.
 - مدل‌ها: Ollama را نصب و `ollama pull qwen2.5:7b` بزنید؛ `local_ai_models` آن را می‌بیند.
 
-## ۶) اینستاگرام (بدون لاگین فیسبوک)
-از «Instagram API with Instagram Login» استفاده می‌شود: کاربر فقط با اینستاگرام وارد می‌شود و صفحه‌ی فیسبوک لازم نیست. شرط‌ها:
-1. حساب اینستاگرام باید **Business یا Creator** باشد (تبدیل از تنظیمات اینستاگرام، رایگان).
-2. یک **اپ در developers.facebook.com** لازم است (حتی بدون لاگین فیسبوک برای کاربران). Use case: *Instagram* → *API setup with Instagram login*. مقادیر `IG_APP_ID` و `IG_APP_SECRET` را از همان‌جا بردارید.
-3. در تنظیمات اپ، **Valid OAuth Redirect URI** را دقیقاً `https://mcp.iranoutdoor.com/instagram/callback` بگذارید (ابزار `ig_accounts` همین آدرس را نشان می‌دهد).
-4. برای حساب‌های خودتان، اپ در حالت Development کافی است (حساب را به‌عنوان Instagram Tester اضافه و قبول کنید). برای حساب‌های دیگر، App Review لازم است.
-5. وب‌هوک (اختیاری، برای صندوق کامنت/دایرکت زنده): Callback `https://mcp.iranoutdoor.com/instagram/webhook` و Verify Token = `IG_WEBHOOK_VERIFY_TOKEN`؛ سپس ابزار `ig_subscribe_webhooks`.
-6. اتصال: با حساب owner ابزار `ig_connect_start` را بزنید، لینک را در مرورگری که در اینستاگرام وارد شده‌اید باز کنید و تأیید کنید. توکن ۶۰‌روزه است و هاب هر هفته خودکار تمدیدش می‌کند.
+## ۶) اینستاگرام — دو راه، هر دو در همان ابزارهای `ig_*`
 
-**دسترسی از ایران:** سرورهای Meta اغلب از IP ایران بسته‌اند و ثبت‌نام توسعه‌دهنده هم ممکن است محدود باشد (تحریم/محدودیت منطقه‌ای) — این را من از اینجا نمی‌توانم تأیید کنم؛ باید امتحان کنید. اگر مسدود بود: `IG_PROXY_URL=http://…` (پروکسی روی سرور خارج) یا آینه‌ی معکوس با `IG_GRAPH_BASE=https://ig-mirror.example.com` یا اجرای هاب در خارج.
-عکس‌های انتشار باید **JPEG** و روی URL عمومی باشند؛ سرورهای Meta باید بتوانند آن‌ها را دانلود کنند (اگر عکس روی هاست ایرانی است و باز نمی‌شود، همان را موقتاً روی یک CDN خارجی بگذارید).
-از کتابخانه‌های غیررسمی (لاگین با رمز، instagrapi) **عمداً استفاده نشده**: خلاف قوانین اینستاگرام است و حساب را در معرض مسدود شدن می‌گذارد.
+| | **پل متن‌باز (`ig-bridge`)** — بدون اپ Meta | **API رسمی Meta** |
+|---|---|---|
+| نیاز به اپ در developers.facebook.com | ❌ ندارد | ✅ دارد |
+| نحوه‌ی ورود | کوکی `sessionid` یا نام‌کاربری/رمز، یک‌بار روی PC خودتان | OAuth با خود اینستاگرام |
+| امکانات | پست/ریل/استوری/کاروسل، کامنت، دایرکت، آمار، حذف کامنت | همان + مخفی‌کردن کامنت، وب‌هوک زنده، سهمیه‌ی رسمی |
+| ریسک | **خلاف قوانین اینستاگرام** (API خصوصی موبایل)؛ احتمال چک‌پوینت/محدودیت/بن حساب | رسمی و بدون ریسک بن |
+| صندوق کامنت/دایرکت | polling هر ۱۰ دقیقه | وب‌هوک |
+
+### راه A — پل بدون اپ Meta (`ig-bridge/`)
+راه‌اندازی کامل در [`ig-bridge/README.md`](../ig-bridge/README.md). خلاصه:
+1. روی سرور: پل را نصب و اجرا کنید (فقط `127.0.0.1`)، `IG_BRIDGE_URL` و `IG_BRIDGE_TOKEN` را در `.env` هاب بگذارید.
+2. روی **PC خودتان**: `python login_local.py --name irancamping --sessionid …` (یا با نام‌کاربری/رمز)، فایل `irancamping.json` ساخته می‌شود.
+3. `node dist/cli.js ig import --bridge-account irancamping --file irancamping.json` و بعد فایل را از PC پاک کنید.
+4. در چت (با کاربر owner): `ig_link_bridge_account` با `label=irancamping` و `bridge_account=irancamping`.
+رمز و کوکی را **هرگز در چت ندهید**؛ فقط از مسیر بالا.
+
+### راه B — API رسمی (اگر کسی دسترسی به اپ Meta دارد)
+Use case: *Instagram* → *API setup with Instagram login*. `IG_APP_ID`/`IG_APP_SECRET` را بگیرید، Redirect URI را `https://mcp.iranoutdoor.com/instagram/callback` بگذارید، حساب را Business/Creator و Instagram Tester کنید، و `ig_connect_start` را بزنید. اگر اپ را **شخص دیگری** بسازد، شما فقط ID و Secret را از او می‌گیرید و ورود اینستاگرام را خودتان انجام می‌دهید. وب‌هوک: `https://mcp.iranoutdoor.com/instagram/webhook` + `ig_subscribe_webhooks`. اگر سرور شما به Meta دسترسی ندارد: `IG_PROXY_URL` یا `IG_GRAPH_BASE`.
+عکس‌های راه B باید **JPEG** و روی URL عمومی باشند (راه A این محدودیت را ندارد).
 
 ## ۷) ایجنت‌های ایران کمپینگ و بارنی
 فایل `agents.json` (نمونه: `agents.example.json`). سه پروتکل:
