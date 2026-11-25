@@ -10,7 +10,36 @@
 
 پیشنهاد: اگر تست اولیه نشان داد اینستاگرام از VPS ایرانی در دسترس نیست، هاب را روی یک سرور کوچک خارجی بگذارید و VPS میهن‌وب را با SSH (کلید + کاربر محدود) وصل کنید.
 
-## ۲) نصب (Ubuntu؛ آزموده‌نشده روی 26.04 — نسخه‌ی خیلی جدید)
+## ۲) نصب — مسیر سریع (پیشنهادی): بسته از روی PC شما، نصب‌کننده‌ی یک‌دستوری روی سرور
+نیازی به GitHub روی سرور، npm روی سرور، یا ساخت DNS جدید نیست. نصب‌کننده خودش پیش‌آزمون اتصال می‌گیرد، Node را (در صورت نبود) با چک‌سام نصب می‌کند، `.env` را با رمزهای تصادفی می‌سازد، کاربر owner می‌سازد، سرویس systemd و سایت nginx را راه می‌اندازد و HTTPS می‌گیرد.
+
+**روی PC (Windows/Mac/Linux، Node 22+):**
+```powershell
+cd D:\claude-website
+node deploy\make-release.mjs                       # → release\iran-camping-hub-0.1.0.tar.gz  (+ node_modules داخلش)
+```
+**فقط آزمون اتصال سرور (چیزی تغییر نمی‌کند):**
+```powershell
+.\deploy\push-from-pc.ps1 -Server 89.32.251.143 -Port <پورت SSH> -User <کاربر> -Domain server1.iranoutdoor.com -PreflightOnly
+```
+**نصب کامل:**
+```powershell
+.\deploy\push-from-pc.ps1 -Server 89.32.251.143 -Port <پورت SSH> -User <کاربر> -Domain server1.iranoutdoor.com -Email you@example.com -VpsLocal -WithBridge
+```
+(اگر `-User` غیر root است، باید `sudo` بدون رمز داشته باشد.) یا دستی:
+```bash
+scp -P <پورت> release/iran-camping-hub-0.1.0.tar.gz <کاربر>@89.32.251.143:/tmp/
+ssh -p <پورت> <کاربر>@89.32.251.143 'mkdir -p /tmp/ich && tar -xzf /tmp/iran-camping-hub-0.1.0.tar.gz -C /tmp/ich && sudo bash /tmp/ich/deploy/install.sh --domain server1.iranoutdoor.com --vps-local --with-bridge'
+```
+گزینه‌ها: `--tls none` (certbot نزن؛ TLS جلوتر از این سرور تمام می‌شود، ولی `HUB_PUBLIC_URL` همچنان `https://` است)، `--no-proxy` (nginx نساز؛ وب‌سرور/پنل موجود را خودتان به `127.0.0.1:8787` وصل کنید)، `--dry-run`، `--preflight-only`، `--dir`، `--port`.
+اگر پورت 80 را وب‌سرور دیگری (پنل) گرفته باشد، نصب‌کننده به آن دست نمی‌زند و فایل `deploy/nginx.generated.conf` را برای reverse proxy می‌سازد.
+اگر `nodejs.org` از سرور بسته است: `node deploy\make-release.mjs --node` (Node را داخل بسته می‌گذارد). اگر PyPI بسته است: `--wheels 3.12,3.13,3.14` (چرخ‌های لینوکس را برای پل اینستاگرام می‌گذارد).
+خروجی: کلید owner (یک‌بار نمایش و در `/root/iran-camping-owner-key.txt` با سطح ۶۰۰)، آدرس MCP و مراحل بعد. اجرای دوباره‌ی نصب‌کننده امن است (`.env`، کاربران و داده‌ها حفظ می‌شوند).
+
+**چه چیزی تست شده:** ساخت بسته، اجرای کامل نصب‌کننده روی یک اوبونتو (کاربر سرویس، `.env`، owner، idempotency، sudoers با `visudo`، فایل systemd با `systemd-analyze verify`، سایت nginx با `nginx -t`، بالا آمدن هاب با کاربر `mcphub` و فراخوانی MCP). **تست نشده:** اجرا روی Ubuntu 26.04 واقعی و روی سرور شما، issuance گواهی Let's Encrypt، نصب پل اینستاگرام (pip) و `push-from-pc.ps1` روی ویندوز.
+
+## ۲-ب) نصب دستی (اگر نصب‌کننده را نمی‌خواهید)
+ (Ubuntu؛ آزموده‌نشده روی 26.04 — نسخه‌ی خیلی جدید)
 **دامنه:** اگر نمی‌توانید DNS جدید اضافه کنید، از همان دامنه‌ی سرور استفاده کنید (مثلاً `server1.iranoutdoor.com`، به شرط اینکه به IP سرور اشاره کند: `getent hosts server1.iranoutdoor.com`). در `.env`: `HUB_PUBLIC_URL=https://server1.iranoutdoor.com`، و در `deploy/nginx.conf` هم `server_name` همان باشد. اگر پنل مدیریت (DirectAdmin/Plesk/cPanel…) پورت‌های 80/443 را قبلاً گرفته، به‌جای nginx جدا، یک «reverse proxy» از همان وب‌سرور به `127.0.0.1:8787` بسازید (حتماً با پشتیبانی WebSocket برای مسیر `/agent/ws` و بدون بافر).
 
 **Node 22 (باینری رسمی؛ مستقل از نسخه‌ی اوبونتو):**

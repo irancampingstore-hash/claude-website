@@ -46,6 +46,15 @@ describe("misc guards", () => {
   });
 });
 
+describe("public URL guard", () => {
+  it("refuses a plain-http public URL with a clear message, accepts https and localhost", async () => {
+    const { createApp } = await import("../src/app.js");
+    expect(() => createApp(makeHub({ HUB_PUBLIC_URL: "http://hub.example.com" }).hub)).toThrow(/must start with https:\/\//);
+    expect(() => createApp(makeHub({ HUB_PUBLIC_URL: "https://hub.example.com" }).hub)).not.toThrow();
+    expect(() => createApp(makeHub({ HUB_PUBLIC_URL: "http://localhost:8787" }).hub)).not.toThrow();
+  });
+});
+
 describe("users and roles", () => {
   it("API key auth, role presets and overrides", () => {
     const { hub } = makeHub();

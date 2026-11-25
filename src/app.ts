@@ -21,6 +21,11 @@ export function createApp(hub: Hub): { app: express.Express; provider: HubOAuthP
   if (cfg.trustProxy) app.set("trust proxy", 1);
 
   const publicUrl = new URL(cfg.publicUrl);
+  if (publicUrl.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(publicUrl.hostname)) {
+    throw new Error(
+      `HUB_PUBLIC_URL must start with https:// (got ${cfg.publicUrl}). Claude/ChatGPT and OAuth require HTTPS; if TLS is terminated by nginx, a panel or Cloudflare in front of the hub, still write the public https:// address here.`,
+    );
+  }
   const allowedHosts = new Set([publicUrl.host, publicUrl.hostname, "localhost", "127.0.0.1", `localhost:${cfg.port}`, `127.0.0.1:${cfg.port}`]);
 
   // Host-header allow-list (blocks DNS-rebinding style requests)
