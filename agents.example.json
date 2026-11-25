@@ -1,0 +1,36 @@
+{
+  "agents": [
+    {
+      "id": "irancamping",
+      "name": "ایجنت ایران کمپینگ",
+      "description": "ایجنت هوش مصنوعی فروشگاه: پاسخ به مشتری، راهنمای محصول، پیگیری سفارش",
+      "protocol": "openai",
+      "baseUrl": "https://agent.example.com/v1",
+      "model": "irancamping-agent",
+      "authEnv": "IRANCAMPING_AGENT_TOKEN",
+      "systemPrompt": "You are the Iran Camping store assistant. Answer in Persian.",
+      "timeoutSeconds": 90
+    },
+    {
+      "id": "barney",
+      "name": "بارنی",
+      "description": "ایجنت بارنی — نمونه‌ی پروتکل http با قالب دلخواه درخواست و مسیر پاسخ",
+      "protocol": "http",
+      "baseUrl": "https://barney.example.com",
+      "chatPath": "/api/chat",
+      "authEnv": "BARNEY_AGENT_TOKEN",
+      "authHeader": "X-API-Key",
+      "authPrefix": "",
+      "requestTemplate": { "message": "{{message}}", "session_id": "{{conversation_id}}", "user": "{{user}}" },
+      "responsePath": "data.reply"
+    },
+    {
+      "id": "barney-mcp",
+      "name": "بارنی (MCP)",
+      "description": "اگر بارنی سرور MCP خودش را دارد، با protocol=mcp ابزارهایش مستقیم قابل فراخوانی است",
+      "protocol": "mcp",
+      "baseUrl": "https://barney.example.com/mcp",
+      "authEnv": "BARNEY_AGENT_TOKEN"
+    }
+  ]
+}
