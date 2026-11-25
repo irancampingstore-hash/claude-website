@@ -63,6 +63,7 @@ git clone <repo-url> && cd claude-website && npm ci && npm run build
 }
 ```
 اجرا: `npm run agent` (برای اجرای دائم: Task Scheduler در ویندوز یا systemd/launchd). فقط اتصال **خروجی** برقرار می‌شود.
+- `httpAllow`: فهرست آدرس‌هایی که هاب می‌تواند از طریق PC فقط با **GET** بخواند (مثلاً `["http://127.0.0.1:7422/fleet"]`)؛ سرویس‌هایی که فقط روی `127.0.0.1` همان PC گوش می‌دهند از VPS دیده نمی‌شوند و با ابزار `pc_http_get` در دسترس می‌شوند. بدون ارسال توکن و بدون دنبال‌کردن redirect.
 - پیش‌فرض: هیچ پوشه‌ای باز نیست و اجرای دستور **خاموش** است. فقط وقتی لازم دارید `allowExec: true` کنید.
 - مدل‌ها: Ollama را نصب و `ollama pull qwen2.5:7b` بزنید؛ `local_ai_models` آن را می‌بیند.
 
@@ -93,6 +94,7 @@ Use case: *Instagram* → *API setup with Instagram login*. `IG_APP_ID`/`IG_APP_
 - `openai`: ایجنتی که `POST {baseUrl}/chat/completions` سازگار با OpenAI دارد.
 - `http`: هر REST دلخواه با `requestTemplate` (جایگزین‌ها: `{{message}}` `{{conversation_id}}` `{{context}}` `{{user}}`) و `responsePath` (مثل `data.reply`).
 - `mcp`: ایجنتی که خودش سرور MCP دارد؛ با `agent_mcp_list_tools` / `agent_mcp_call`.
+- `queue`: ایجنتی بدون endpoint مستقیم (Agent One، نقش‌های Barney)؛ فقط `agent_handoff` و گذرگاه رویداد. ثبت کار در صف به‌معنی اجرا نیست.
 
 توکن‌ها در فایل نیستند؛ `authEnv` نام متغیر محیطی را می‌دهد. برای ارتباط **از ایجنت به هاب** (گزارش، تحویل نتیجه، گرفتن کار صف‌شده):
 ```

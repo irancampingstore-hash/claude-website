@@ -16,7 +16,7 @@ describe("tools/discover-agents.mjs (read-only discovery)", () => {
     mkdirSync(join(root, "node_modules", "x"), { recursive: true });
     writeFileSync(join(root, "state", "PAUSED"), "1");
     writeFileSync(join(root, "node_modules", "x", "package.json"), "{}");
-    writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { rahim: { type: "sse", url: `https://h.example/sse?token=${SECRET}`, headers: { Authorization: `Bearer ${SECRET}` } }, local: { command: "C:\\tools\\node.exe", args: ["srv.js"], env: { API_KEY: SECRET } } } }));
+    writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { rahim: { type: "sse", url: `https://user:pw@staging.example.com/wp-json/forgeops-native/v1/operator?token=${SECRET}`, headers: { Authorization: `Bearer ${SECRET}` } }, local: { command: "C:\\tools\\node.exe", args: ["srv.js"], env: { API_KEY: SECRET } } } }));
     writeFileSync(join(root, "agent_catalog.json"), JSON.stringify({ agents: [{ id: "barney.research", owner: "rahim", purpose: "study", runtime: "python", api_key: SECRET, tools: ["web"] }, { id: "barney.research" }] }));
     writeFileSync(join(root, "barney", "package.json"), JSON.stringify({ name: "barney-hq", version: "1.2.3", scripts: { start: "x" }, dependencies: { express: "4" } }));
     writeFileSync(join(root, "AGENTS.md"), "# Agents\nsecret " + SECRET);
@@ -55,6 +55,7 @@ describe("tools/discover-agents.mjs (read-only discovery)", () => {
     expect(by.unprobed.status).toBe("UNKNOWN");
     expect(by["mcp:rahim"]).toBeDefined();
     expect(by["mcp:local"].credential_reference).toContain("API_KEY");
+    expect(by["mcp:rahim"].base_url).toBe("https://staging.example.com/wp-json/forgeops-native/v1/operator"); // path kept, creds/query dropped
     expect(by["agent:barney.research"].purpose).toBe("study");
     expect(reg.filter((r) => r.agent_id.includes("barney.research"))).toHaveLength(1); // no duplicates
     expect(stdout).toContain("services:");

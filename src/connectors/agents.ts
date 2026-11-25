@@ -18,8 +18,9 @@ export interface AgentDef {
   id: string;
   name: string;
   description: string;
-  protocol: "openai" | "http" | "mcp";
-  baseUrl: string;
+  /** "queue" = no direct endpoint (e.g. Agent One / Barney roles): work goes through agent_handoff + the event bus only. */
+  protocol: "openai" | "http" | "mcp" | "queue";
+  baseUrl?: string;
   /** Environment variable holding the credential sent to the agent. */
   authEnv?: string;
   authHeader?: string; // default Authorization
@@ -45,7 +46,8 @@ export function loadAgents(path: string): AgentDef[] {
     if (!/^[a-z0-9_-]{2,30}$/.test(a.id)) throw new Error(`agents.json: invalid agent id "${a.id}" (use a-z 0-9 _ -)`);
     if (seen.has(a.id)) throw new Error(`agents.json: duplicate id ${a.id}`);
     seen.add(a.id);
-    if (!["openai", "http", "mcp"].includes(a.protocol)) throw new Error(`agents.json: ${a.id}: protocol must be openai | http | mcp`);
+    if (!["openai", "http", "mcp", "queue"].includes(a.protocol)) throw new Error(`agents.json: ${a.id}: protocol must be openai | http | mcp | queue`);
+    if (a.protocol !== "queue" && !a.baseUrl) throw new Error(`agents.json: ${a.id}: baseUrl is required for protocol ${a.protocol}`);
   }
   return agents;
 }
@@ -96,6 +98,9 @@ export function createAgentsConnector(hub: Hub): Connector {
   const history = new Map<string, Array<{ role: string; content: string }>>();
 
   async function ask(a: AgentDef, message: string, conversationId: string | undefined, context: string | undefined, userName: string): Promise<string> {
+    if (a.protocol === "queue") {
+      throw new HubError(`Agent "${a.id}" has no direct chat endpoint (queue-only). Use agent_handoff to leave it a task; its answer arrives in agent_inbox_list. Queuing a task is NOT the same as the agent executing it.`, "queue_only");
+    }
     const headers = authHeaders(a);
     const timeoutMs = (a.timeoutSeconds ?? 90) * 1000;
     const text = context ? `${message}\n\n[Context]\n${context}` : message;
@@ -104,7 +109,7 @@ export function createAgentsConnector(hub: Hub): Connector {
       const key = `${a.id}:${conversationId ?? "-"}`;
       const past = conversationId ? (history.get(key) ?? []) : [];
       const messages = [...(a.systemPrompt ? [{ role: "system", content: a.systemPrompt }] : []), ...past, { role: "user", content: text }];
-      const r = await http<any>(`${a.baseUrl.replace(/\/+$/, "")}/chat/completions`, { method: "POST", headers, body: { model: a.model ?? "default", messages, stream: false }, timeoutMs });
+      const r = await http<any>(`${a.baseUrl!.replace(/\/+$/, "")}/chat/completions`, { method: "POST", headers, body: { model: a.model ?? "default", messages, stream: false }, timeoutMs });
       const reply = r.json?.choices?.[0]?.message?.content ?? "";
       if (conversationId) history.set(key, [...past, { role: "user", content: text }, { role: "assistant", content: reply }].slice(-20));
       return reply;
@@ -113,7 +118,7 @@ export function createAgentsConnector(hub: Hub): Connector {
     if (a.protocol === "http") {
       const vars = { message: text, conversation_id: conversationId ?? "", context: context ?? "", user: userName };
       const body = a.requestTemplate ? fillTemplate(a.requestTemplate, vars) : { message: text, conversation_id: conversationId };
-      const r = await http<any>(`${a.baseUrl.replace(/\/+$/, "")}${a.chatPath ?? "/chat"}`, { method: "POST", headers, body, timeoutMs });
+      const r = await http<any>(`${a.baseUrl!.replace(/\/+$/, "")}${a.chatPath ?? "/chat"}`, { method: "POST", headers, body, timeoutMs });
       return extractReply(r.json, r.text, a.responsePath);
     }
 
@@ -123,7 +128,7 @@ export function createAgentsConnector(hub: Hub): Connector {
   async function withMcp<T>(a: AgentDef, fn: (c: Client) => Promise<T>): Promise<T> {
     if (a.protocol !== "mcp") throw new HubError(`Agent ${a.id} is not an MCP agent (protocol=${a.protocol}).`, "wrong_protocol");
     const client = new Client({ name: "iran-camping-hub", version: "0.1.0" });
-    const transport = new StreamableHTTPClientTransport(new URL(a.baseUrl), { requestInit: { headers: authHeaders(a) } });
+    const transport = new StreamableHTTPClientTransport(new URL(a.baseUrl!), { requestInit: { headers: authHeaders(a) } });
     try {
       await client.connect(transport);
       return await fn(client);
@@ -293,6 +298,7 @@ export function createAgentsConnector(hub: Hub): Connector {
       if (!agents.length) return { ok: false, detail: "no agents configured (agents.json)" };
       const results = await Promise.all(
         agents.map(async (a) => {
+          if (!a.baseUrl) return `${a.id}: queue-only (reachable)`;
           try {
             await fetch(a.baseUrl, { method: "HEAD", signal: AbortSignal.timeout(6000), headers: {} });
             return `${a.id}: reachable`;

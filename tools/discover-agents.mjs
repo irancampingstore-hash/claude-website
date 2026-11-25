@@ -33,7 +33,16 @@ const probeBase = arg("probe-base"); // test hook: rewrite http://127.0.0.1:PORT
 
 /* ───────── redaction ───────── */
 const SECRET_KEY = /pass(word)?|secret|token|api[_-]?key|authorization|private|cookie|credential|bearer|session/i;
-const TOKENISH = /(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|Bearer\s+\S{8,}|[A-Za-z0-9+/_-]{32,}={0,2})/g;
+const TOKENISH = /(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|Bearer\s+\S{8,}|(?=[A-Za-z_-]*\d)[A-Za-z0-9_-]{32,}={0,2})/g; // long token-like strings that contain a digit (URL paths and slugs are left alone)
+/** Keep scheme+host+path only: drop credentials and query strings (where tokens usually hide). */
+function cleanUrl(u) {
+  try {
+    const x = new URL(String(u));
+    return `${x.protocol}//${x.host}${x.pathname}`;
+  } catch {
+    return maskStr(String(u));
+  }
+}
 const maskStr = (s) => (typeof s === "string" ? s.replace(TOKENISH, "[masked]") : s);
 
 /** Keep structure, drop secret values; env/headers become NAME lists. */
@@ -112,7 +121,7 @@ function summarize(path) {
     if (name === ".mcp.json" || name === "mcp.json" || name === "claude_desktop_config.json") {
       const j = JSON.parse(raw);
       const servers = j.mcpServers ?? j.servers ?? {};
-      return { ...base, kind: "mcp-config", servers: Object.entries(servers).map(([n, s]) => ({ name: n, type: s.type ?? (s.url ? "http/sse" : "stdio"), url: s.url ? maskStr(String(s.url).replace(/([?&](key|token|auth)[^&]*)/gi, "")) : undefined, command: s.command ? String(s.command).split(/[\\/]/).pop() : undefined, env_names: s.env ? Object.keys(s.env) : [], header_names: s.headers ? Object.keys(s.headers) : [] })) };
+      return { ...base, kind: "mcp-config", servers: Object.entries(servers).map(([n, s]) => ({ name: n, type: s.type ?? (s.url ? "http/sse" : "stdio"), url: s.url ? cleanUrl(s.url) : undefined, command: s.command ? String(s.command).split(/[\\/]/).pop() : undefined, env_names: s.env ? Object.keys(s.env) : [], header_names: s.headers ? Object.keys(s.headers) : [] })) };
     }
     if (name === "agent_catalog.json" || name === "barney-agent-manifest.json" || name === "barney-status.json" || name === "remote_access_policy.json") {
       const j = JSON.parse(raw);
@@ -137,6 +146,21 @@ function summarize(path) {
   return base;
 }
 
+/** pid -> process image name (read-only), so open ports can be tied to a program. */
+async function processNames() {
+  const map = new Map();
+  try {
+    if (process.platform === "win32") {
+      const { stdout } = await execFileP("tasklist", ["/fo", "csv", "/nh"], { timeout: 10_000, maxBuffer: 5_000_000 });
+      for (const l of stdout.split(/\r?\n/)) { const m = l.match(/^"([^"]+)","(\d+)"/); if (m) map.set(m[2], m[1]); }
+    } else {
+      const { stdout } = await execFileP("ps", ["-eo", "pid=,comm="], { timeout: 10_000, maxBuffer: 5_000_000 });
+      for (const l of stdout.split("\n")) { const m = l.trim().match(/^(\d+)\s+(.+)$/); if (m) map.set(m[1], m[2]); }
+    }
+  } catch { /* optional */ }
+  return map;
+}
+
 async function listeningPorts() {
   if (skipNetstat) return [];
   try {
@@ -157,7 +181,8 @@ const now = new Date().toISOString();
 const report = { generated_at: now, probes: [], mcp_handshakes: [], files: [], watch: [], listening: [] };
 
 const ports = await listeningPorts();
-report.listening = ports.filter((p) => /^(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|::|\*):\d+$|:\d+$/.test(p.address)).map((p) => ({ ...p, port: Number(p.address.split(":").pop()) })).sort((a, b) => a.port - b.port).slice(0, 200);
+const names = skipNetstat ? new Map() : await processNames();
+report.listening = ports.filter((p) => /^(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|::|\*):\d+$|:\d+$/.test(p.address)).map((p) => ({ ...p, port: Number(p.address.split(":").pop()), process: p.pid ? names.get(p.pid) : undefined })).sort((a, b) => a.port - b.port).slice(0, 200);
 
 for (const root of roots) {
   if (!existsSync(root)) { report.files.push({ file: root, note: "folder not found" }); continue; }
@@ -208,11 +233,14 @@ for (const f of report.files) {
 
 /* ───────── outputs ───────── */
 mkdirSync(outDir, { recursive: true });
+// Markdown is written as plain ASCII punctuation so Windows PowerShell/Notepad never shows mojibake.
+const ascii = (t) => t.replace(/\u2014/g, "-").replace(/\u2192/g, "->").replace(/\u2705/g, "PASS").replace(/\u274C/g, "FAIL");
+const writeMd = (name, content) => writeFileSync(join(outDir, name), ascii(content));
 const yn = (v) => (v === true ? "yes" : v === false ? "no" : "UNKNOWN");
 writeFileSync(join(outDir, "AGENT_API_REGISTRY.json"), JSON.stringify({ revision: "R01", generated_at: now, services: registry }, null, 2));
-writeFileSync(join(outDir, "AGENT_API_REGISTRY.md"), `# Agent API Registry (generated ${now})\n\nSecret values are never recorded; only variable/header NAMES. Status is VERIFIED only with probe evidence.\n\n` + registry.map((r) => `## ${r.agent_id} — ${r.status}\n- purpose: ${r.purpose ?? "UNKNOWN"}\n- base_url: ${r.base_url ?? "UNKNOWN"} (${r.protocol ?? "UNKNOWN"}, ${r.transport ?? "UNKNOWN"})\n- auth: ${r.authentication_type ?? "UNKNOWN"}${r.credential_reference ? ` — ref: ${r.credential_reference}` : ""}\n- evidence: ${r.evidence.length ? r.evidence.join("; ") : "none yet"}\n`).join("\n"));
-writeFileSync(join(outDir, "AGENT_INTEGRATION_MATRIX.md"), `# Integration matrix\n\n| service | OpenAI-compatible | Anthropic-compatible | MCP | auth | status |\n|---|---|---|---|---|---|\n` + registry.map((r) => `| ${r.agent_id} | ${yn(r.openai_compatible)} | ${yn(r.anthropic_compatible)} | ${yn(r.mcp_compatible)} | ${r.authentication_type ?? "UNKNOWN"} | ${r.status} |`).join("\n") + "\n");
-writeFileSync(join(outDir, "AGENT_CONNECTION_TEST_REPORT.md"), `# Connection test report (${now})\n\nRead-only: GET probes and MCP initialize handshakes only.\n\n## Probes\n` + (report.probes.map((p) => `- ${p.ok ? "✅" : "❌"} ${p.service}: GET ${p.url} → ${p.status ?? p.error} (${p.ms} ms)${p.json_keys ? ` keys=${JSON.stringify(p.json_keys)}` : ""}`).join("\n") || "- (probes skipped)") + `\n\n## MCP handshakes\n` + (report.mcp_handshakes.map((p) => `- ${p.ok ? "✅" : "❌"} ${p.service}: ${p.status ?? p.error} ${p.server ?? ""}`).join("\n") || "- none") + `\n\n## Watch files\n` + (report.watch.map((w) => `- ${w.path}: ${w.exists ? "EXISTS" : "absent"} (not modified)`).join("\n") || "- none") + `\n\n## Listening TCP ports (${report.listening.length})\n` + report.listening.map((p) => `- ${p.address}${p.pid ? ` pid ${p.pid}` : ""}`).join("\n") + `\n\n## Files found (${report.files.length})\n` + report.files.map((f) => `- ${f.file} — ${f.kind ?? f.note ?? ""}`).join("\n") + "\n");
+writeMd("AGENT_API_REGISTRY.md", `# Agent API Registry (generated ${now})\n\nSecret values are never recorded; only variable/header NAMES. Status is VERIFIED only with probe evidence.\n\n` + registry.map((r) => `## ${r.agent_id} — ${r.status}\n- purpose: ${r.purpose ?? "UNKNOWN"}\n- base_url: ${r.base_url ?? "UNKNOWN"} (${r.protocol ?? "UNKNOWN"}, ${r.transport ?? "UNKNOWN"})\n- auth: ${r.authentication_type ?? "UNKNOWN"}${r.credential_reference ? ` — ref: ${r.credential_reference}` : ""}\n- evidence: ${r.evidence.length ? r.evidence.join("; ") : "none yet"}\n`).join("\n"));
+writeMd("AGENT_INTEGRATION_MATRIX.md", `# Integration matrix\n\n| service | OpenAI-compatible | Anthropic-compatible | MCP | auth | status |\n|---|---|---|---|---|---|\n` + registry.map((r) => `| ${r.agent_id} | ${yn(r.openai_compatible)} | ${yn(r.anthropic_compatible)} | ${yn(r.mcp_compatible)} | ${r.authentication_type ?? "UNKNOWN"} | ${r.status} |`).join("\n") + "\n");
+writeMd("AGENT_CONNECTION_TEST_REPORT.md", `# Connection test report (${now})\n\nRead-only: GET probes and MCP initialize handshakes only.\n\n## Probes\n` + (report.probes.map((p) => `- ${p.ok ? "✅" : "❌"} ${p.service}: GET ${p.url} → ${p.status ?? p.error} (${p.ms} ms)${p.json_keys ? ` keys=${JSON.stringify(p.json_keys)}` : ""}`).join("\n") || "- (probes skipped)") + `\n\n## MCP handshakes\n` + (report.mcp_handshakes.map((p) => `- ${p.ok ? "✅" : "❌"} ${p.service}: ${p.status ?? p.error} ${p.server ?? ""}`).join("\n") || "- none") + `\n\n## Watch files\n` + (report.watch.map((w) => `- ${w.path}: ${w.exists ? "EXISTS" : "absent"} (not modified)`).join("\n") || "- none") + `\n\n## Listening TCP ports (${report.listening.length})\n` + report.listening.map((p) => `- ${p.address}${p.pid ? ` pid ${p.pid}` : ""}${p.process ? ` (${p.process})` : ""}`).join("\n") + `\n\n## Files found (${report.files.length})\n` + report.files.map((f) => `- ${f.file} — ${f.kind ?? f.note ?? ""}`).join("\n") + "\n");
 writeFileSync(join(outDir, "discovery-details.json"), JSON.stringify(report, null, 2));
 
 console.log(`Wrote registry to ${outDir}\n  services: ${registry.length}  (VERIFIED: ${registry.filter((r) => r.status === "VERIFIED").length}, UNKNOWN: ${registry.filter((r) => r.status === "UNKNOWN").length})\n  config files scanned: ${report.files.length}\nReview the files, then send me AGENT_API_REGISTRY.md + AGENT_CONNECTION_TEST_REPORT.md (they contain no secret values).`);

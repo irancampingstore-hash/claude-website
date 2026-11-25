@@ -265,7 +265,7 @@ describe("PC bridge", () => {
       bad.on("error", () => resolve());
     });
 
-    const cfg = { hubUrl: "", token: "", name: "main", roots: [], writeRoots: [], allowExec: false, apps: {}, aiProviders: {} };
+    const cfg = { hubUrl: "", token: "", name: "main", roots: [], writeRoots: [], allowExec: false, httpAllow: [], apps: {}, aiProviders: {} };
     const handlers = createHandlers(cfg);
     const ws = new WebSocket(`ws://127.0.0.1:${new URL(base).port}/agent/ws`, { headers: { authorization: "Bearer pc-token-pc-token-1234567890" } });
     await new Promise<void>((r) => ws.on("open", () => r()));

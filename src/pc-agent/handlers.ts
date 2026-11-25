@@ -24,6 +24,29 @@ function insideAny(path: string, roots: string[]): boolean {
   });
 }
 
+/** True if `url` is http(s) and starts with an allowed prefix on a path boundary (so /fleet does not allow /fleet-admin). */
+export function urlAllowed(url: string, allow: string[]): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  if (u.username || u.password) return false;
+  return allow.some((raw) => {
+    let a: URL;
+    try {
+      a = new URL(raw);
+    } catch {
+      return false;
+    }
+    if (a.origin !== u.origin) return false;
+    const ap = a.pathname.replace(/\/+$/, "");
+    return ap === "" || u.pathname === ap || u.pathname.startsWith(`${ap}/`);
+  });
+}
+
 export function createHandlers(cfg: AgentConfig): Record<string, Handler> {
   async function guardPath(raw: unknown, write = false, mustExist = true): Promise<string> {
     if (typeof raw !== "string" || !isAbsolute(raw)) throw new Error("Use an absolute path.");
@@ -91,6 +114,7 @@ export function createHandlers(cfg: AgentConfig): Record<string, Handler> {
         enabled_folders: cfg.roots,
         writable_folders: cfg.writeRoots,
         exec_enabled: cfg.allowExec,
+        http_allow: cfg.httpAllow,
         apps: Object.keys(cfg.apps),
         ai_providers: ai,
       };
@@ -136,6 +160,16 @@ export function createHandlers(cfg: AgentConfig): Record<string, Handler> {
       await mkdir(dirname(p), { recursive: true });
       await writeFile(p, content, "utf8");
       return { written: p, bytes: Buffer.byteLength(content), backup };
+    },
+
+    "http.get": async ({ url }) => {
+      if (typeof url !== "string") throw new Error("url must be a string");
+      if (!cfg.httpAllow.length) throw new Error("No local URLs are enabled on this PC (PC_HTTP_ALLOW / httpAllow).");
+      if (!urlAllowed(url, cfg.httpAllow)) throw new Error(`That URL is not in this PC's allow-list. Allowed: ${cfg.httpAllow.join(", ")}`);
+      const res = await fetch(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(15_000), headers: { accept: "application/json, text/plain;q=0.9, */*;q=0.1" } });
+      if (res.status >= 300 && res.status < 400) throw new Error(`Redirects are not followed (HTTP ${res.status}).`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      return { status: res.status, content_type: res.headers.get("content-type"), truncated: buf.length > MAX_READ, body: buf.subarray(0, MAX_READ).toString("utf8") };
     },
 
     "proc.list": async ({ limit }) => {

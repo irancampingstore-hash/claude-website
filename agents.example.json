@@ -12,36 +12,23 @@
       "timeoutSeconds": 90
     },
     {
-      "id": "barney",
-      "name": "بارنی",
-      "description": "ایجنت بارنی — نمونه‌ی پروتکل http با قالب دلخواه درخواست و مسیر پاسخ",
-      "protocol": "http",
-      "baseUrl": "https://barney.example.com",
-      "chatPath": "/api/chat",
-      "authEnv": "BARNEY_AGENT_TOKEN",
-      "authHeader": "X-API-Key",
-      "authPrefix": "",
-      "requestTemplate": {
-        "message": "{{message}}",
-        "session_id": "{{conversation_id}}",
-        "user": "{{user}}"
-      },
-      "responsePath": "data.reply"
-    },
-    {
-      "id": "barney-mcp",
-      "name": "بارنی (MCP)",
-      "description": "اگر بارنی سرور MCP خودش را دارد، با protocol=mcp ابزارهایش مستقیم قابل فراخوانی است",
-      "protocol": "mcp",
-      "baseUrl": "https://barney.example.com/mcp",
-      "authEnv": "BARNEY_AGENT_TOKEN"
-    },
-    {
       "id": "forgeops-public",
       "name": "ForgeOps (عمومی، فقط‌خواندنی)",
       "description": "MCP عمومی ForgeOps روی staging.irancamping.com؛ فقط status/discover/diagnostics. اتصال initialize هنوز تأیید نشده — بعد از اجرای tools/discover-agents.mjs فعال کنید",
       "protocol": "mcp",
       "baseUrl": "https://staging.irancamping.com/wp-json/forgeops-native/v1/mcp"
+    },
+    {
+      "id": "barney",
+      "name": "بارنی (۷ نقش barney.*)",
+      "description": "نقش‌های research, design, 3d-animation, game-engineering, qa-performance, knowledge-git, integration — در رجیستری ثبت‌شده‌اند ولی API مستقیم ندارند؛ فقط صف کار (agent_handoff). ثبت کار یعنی ثبت کار، نه اجرای آن",
+      "protocol": "queue"
+    },
+    {
+      "id": "agent-one",
+      "name": "Agent One",
+      "description": "هماهنگی/اجرا از طریق ic-bridge/v1 (دریافت، ACK، اجرا، تأیید مستقل). تا مشخص شدن قرارداد واقعی فقط صف",
+      "protocol": "queue"
     }
   ]
 }

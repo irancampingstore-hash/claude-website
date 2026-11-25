@@ -9,6 +9,8 @@ export interface AgentConfig {
   roots: string[];
   writeRoots: string[];
   allowExec: boolean;
+  /** URL prefixes the hub may GET through this PC (read-only relay to local services such as the agent fleet API). */
+  httpAllow: string[];
   /** key → command line, e.g. { vscode: "code", chrome: "C:\\Program Files\\...\\chrome.exe" } */
   apps: Record<string, string>;
   /** provider key → base URL. ollama: http://127.0.0.1:11434 ; openai-compatible: http://127.0.0.1:1234/v1 */
@@ -38,6 +40,7 @@ export function loadAgentConfig(env: NodeJS.ProcessEnv = process.env): AgentConf
     name: file.name ?? env.PC_NAME ?? "main",
     roots: file.roots ?? splitList(env.PC_ALLOWED_ROOTS),
     writeRoots: file.writeRoots ?? splitList(env.PC_WRITE_ROOTS),
+    httpAllow: file.httpAllow ?? splitList(env.PC_HTTP_ALLOW),
     allowExec: file.allowExec ?? (env.PC_ALLOW_EXEC === "1" || env.PC_ALLOW_EXEC === "true"),
     apps: file.apps ?? {},
     aiProviders: providers,
