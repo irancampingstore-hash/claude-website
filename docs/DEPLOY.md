@@ -10,23 +10,44 @@
 
 پیشنهاد: اگر تست اولیه نشان داد اینستاگرام از VPS ایرانی در دسترس نیست، هاب را روی یک سرور کوچک خارجی بگذارید و VPS میهن‌وب را با SSH (کلید + کاربر محدود) وصل کنید.
 
-## ۲) نصب (Ubuntu 22.04/24.04)
+## ۲) نصب (Ubuntu؛ آزموده‌نشده روی 26.04 — نسخه‌ی خیلی جدید)
+**دامنه:** اگر نمی‌توانید DNS جدید اضافه کنید، از همان دامنه‌ی سرور استفاده کنید (مثلاً `server1.iranoutdoor.com`، به شرط اینکه به IP سرور اشاره کند: `getent hosts server1.iranoutdoor.com`). در `.env`: `HUB_PUBLIC_URL=https://server1.iranoutdoor.com`، و در `deploy/nginx.conf` هم `server_name` همان باشد. اگر پنل مدیریت (DirectAdmin/Plesk/cPanel…) پورت‌های 80/443 را قبلاً گرفته، به‌جای nginx جدا، یک «reverse proxy» از همان وب‌سرور به `127.0.0.1:8787` بسازید (حتماً با پشتیبانی WebSocket برای مسیر `/agent/ws` و بدون بافر).
+
+**Node 22 (باینری رسمی؛ مستقل از نسخه‌ی اوبونتو):**
 ```bash
-# Node 22
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash - && sudo apt-get install -y nodejs nginx
+cd /tmp && curl -fsSLO https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.xz
+echo "cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8  node-v22.23.5-linux-x64.tar.xz" | sha256sum -c -
+sudo tar -xJf node-v22.23.5-linux-x64.tar.xz -C /usr/local --strip-components=1 && node -v   # v22.23.5
+sudo apt-get update && sudo apt-get install -y nginx git certbot python3-certbot-nginx python3-venv
+```
+(اگر `nodejs.org` یا `registry.npmjs.org` از سرور باز نشد، روی یک سیستم لینوکس x64 بیلد کنید: `npm ci && npm run build && npm ci --omit=dev` و پوشه‌ی پروژه را با `scp`/`rsync` ببرید.)
+
+```bash
 sudo useradd --system --create-home --shell /usr/sbin/nologin mcphub
-sudo -u mcphub git clone <repo-url> /opt/iran-camping-hub && cd /opt/iran-camping-hub
+sudo -u mcphub git clone -b ccr-84251afb-x7i9xi https://github.com/irancampingstore-hash/claude-website /opt/iran-camping-hub
+cd /opt/iran-camping-hub
 sudo -u mcphub npm ci && sudo -u mcphub npm run build
-sudo -u mcphub cp .env.example .env && sudo -u mcphub cp agents.example.json agents.json
-sudo -u mcphub chmod 600 .env
+sudo -u mcphub cp .env.example .env && sudo -u mcphub cp agents.example.json agents.json && sudo chmod 600 .env
 sudo -u mcphub node dist/cli.js secret     # مقدار را در HUB_SECRET بگذارید
 sudo -u mcphub node dist/cli.js user add --name owner --role owner
 sudo cp deploy/iran-camping-hub.service /etc/systemd/system/ && sudo systemctl enable --now iran-camping-hub
 sudo cp deploy/nginx.conf /etc/nginx/sites-available/mcp && sudo ln -s /etc/nginx/sites-available/mcp /etc/nginx/sites-enabled/
-sudo certbot --nginx -d mcp.iranoutdoor.com
+sudo certbot --nginx -d server1.iranoutdoor.com
 sudo -u mcphub node dist/cli.js doctor
 ```
-DNS: رکورد A برای `mcp.iranoutdoor.com` به IP سرور. nginx حتماً بافر پاسخ را خاموش دارد (در فایل نمونه هست).
+گواهی Let's Encrypt (روش HTTP-01) فقط وقتی کار می‌کند که پورت 80 از اینترنت به سرور برسد. اگر سرور پشت فیلتر/محدودیت ورودی است یا دامنه به IP دیگری اشاره می‌کند، صادر نمی‌شود.
+
+### آزمون اتصال‌ها از روی خود VPS (قبل از هر نصبی)
+```bash
+# DNS: اگر IP برگشتی 10.10.34.x بود یعنی توسط فیلترینگ مسدود است
+getent hosts www.instagram.com i.instagram.com graph.instagram.com
+for u in https://www.instagram.com/ https://i.instagram.com/api/v1/ https://graph.instagram.com/ https://irancamping.com/ https://nodejs.org/ https://registry.npmjs.org/ https://github.com/; do
+  printf "%-40s " "$u"; curl -sS -o /dev/null -w "%{http_code}  %{time_total}s\n" --max-time 15 "$u" 2>&1 | tail -1
+done
+ss -ltnp | grep -E ':(80|443|8787) '        # چه چیزی پورت‌ها را گرفته؟
+```
+تفسیر: کد HTTP (حتی 301/302/400/403) یعنی **رسیده‌ایم**؛ `000`، `timed out`، `Connection reset` یا `Could not resolve` یعنی مسدود است. پل `ig-bridge` به `i.instagram.com` نیاز دارد (API موبایل)، API رسمی به `graph.instagram.com`.
+از بیرون هم باید بررسی شود که Claude/ChatGPT به هاب می‌رسند: بعد از نصب، `https://server1.iranoutdoor.com/healthz` را از یک شبکه‌ی خارج از ایران (مثلاً موبایل با VPN یا یک سایت «check host») باز کنید.
 
 ## ۳) WordPress / WooCommerce (irancamping.com)
 1. یک کاربر اختصاصی بسازید (مثلاً `mcp-hub`) با نقش **Shop Manager** (یا Editor) — نه Administrator.
